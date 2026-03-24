@@ -2,24 +2,15 @@ require("dotenv").config();
 const express = require("express");
 const cors = require("cors");
 const rateLimit = require("express-rate-limit");
+const compression = require("compression");
 
+const validateEnv = require("./utils/validateEnv");
 const authRoutes = require("./routes/auth");
 const walletRoutes = require("./routes/wallet");
 const paymentRoutes = require("./routes/payments");
 const kycRoutes = require("./routes/kyc");
 const adminRoutes = require("./routes/admin");
 const webhookRoutes = require("./routes/webhooks");
-require('dotenv').config();
-const express = require('express');
-const cors = require('cors');
-const rateLimit = require('express-rate-limit');
-
-const validateEnv = require('./utils/validateEnv');
-const authRoutes = require('./routes/auth');
-const walletRoutes = require('./routes/wallet');
-const paymentRoutes = require('./routes/payments');
-const kycRoutes = require('./routes/kyc');
-const adminRoutes = require('./routes/admin');
 
 validateEnv();
 
@@ -27,6 +18,7 @@ const app = express();
 
 app.use(cors({ origin: process.env.FRONTEND_URL, credentials: true }));
 app.use(express.json());
+app.use(compression({ threshold: 1024 }));
 
 const limiter = rateLimit({
   windowMs: 15 * 60 * 1000,
@@ -48,11 +40,6 @@ app.use("/api/payments", paymentRoutes);
 app.use("/api/kyc", kycRoutes);
 app.use("/api/admin", adminRoutes);
 app.use("/api/webhooks", webhookRoutes);
-app.use('/api/auth', authRoutes);
-app.use('/api/wallet', walletRoutes);
-app.use('/api/payments', paymentRoutes);
-app.use('/api/kyc', kycRoutes);
-app.use('/api/admin', adminRoutes);
 
 app.get('/health', (req, res) =>
   res.json({ status: 'ok', network: process.env.STELLAR_NETWORK || 'testnet' })
