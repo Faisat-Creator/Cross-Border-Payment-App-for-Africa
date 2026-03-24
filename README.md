@@ -152,11 +152,11 @@ Sender → [approve USDC transfer] → Backend → [sign with keypair]
 - A Stellar testnet account (auto-created on registration)
 
 ### 1. Database
-
 ```bash
 psql -U postgres -c "CREATE DATABASE cbpa_db;"
-psql -U postgres -d cbpa_db -f database/schema.sql
 ```
+
+Then run migrations (see Database Migrations below).
 
 ### 2. Backend
 
@@ -178,6 +178,44 @@ cp .env.example .env
 npm start
 # App starts on http://localhost:3000
 ```
+
+---
+
+## Database Migrations
+
+AfriPay uses [node-pg-migrate](https://github.com/salsita/node-pg-migrate) for schema version control. All schema changes must be made as numbered migration files inside `database/migrations/` — never by editing `schema.sql` directly.
+
+### Run migrations
+```bash
+cd backend
+npm run migrate
+```
+
+### Roll back the last migration
+```bash
+cd backend
+npm run migrate:rollback
+```
+
+### Adding a new migration
+
+Create a new file in `database/migrations/` following the naming convention:
+```
+002_your_migration_name.js
+```
+
+Each file must export an `up` and a `down` function:
+```js
+exports.up = (pgm) => {
+  // forward changes
+};
+
+exports.down = (pgm) => {
+  // reverse changes
+};
+```
+
+node-pg-migrate tracks applied migrations in a `pgmigrations` table that it creates automatically. Never delete or edit this table manually.
 
 ---
 
