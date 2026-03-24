@@ -3,11 +3,12 @@ const express = require('express');
 const cors = require('cors');
 const rateLimit = require('express-rate-limit');
 
+const db = require('./db');
 const validateEnv = require('./utils/validateEnv');
 const authRoutes = require('./routes/auth');
 const walletRoutes = require('./routes/wallet');
 const paymentRoutes = require('./routes/payments');
-const kycRoutes = require('./routes/kyc');
+const kycRoutes = require('./routes/ kyc');
 const adminRoutes = require('./routes/admin');
 
 validateEnv();
@@ -47,4 +48,31 @@ app.use((err, req, res, next) => {
 });
 
 const PORT = process.env.PORT || 5000;
-app.listen(PORT, () => console.log(`Server running on port ${PORT}`));
+const server = app.listen(PORT, () => console.log(`Server running on port ${PORT}`));
+
+const SHUTDOWN_TIMEOUT_MS = 30_000;
+
+async function shutdown(signal) {
+  console.log(`${signal} received — shutting down gracefully`);
+
+  const forceExit = setTimeout(() => {
+    console.error('Shutdown timeout exceeded — forcing exit');
+    process.exit(1);
+  }, SHUTDOWN_TIMEOUT_MS).unref();
+
+  server.close(async () => {
+    clearTimeout(forceExit);
+    try {
+      await db.pool.end();
+      console.log('DB pool closed');
+    } catch (err) {
+      console.error('Error closing DB pool:', err.message);
+    }
+    process.exit(0);
+  });
+}
+
+process.on('SIGTERM', () => shutdown('SIGTERM'));
+process.on('SIGINT',  () => shutdown('SIGINT'));
+
+module.exports = { app, server, shutdown };
