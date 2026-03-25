@@ -1,6 +1,7 @@
 const { v4: uuidv4 } = require("uuid");
 const db = require("../db");
 const { sendPayment } = require("../services/stellar");
+const webhook = require("../services/webhook");
 
 // Configurable KYC transaction threshold in USD equivalent
 const KYC_THRESHOLD_USD = parseFloat(process.env.KYC_THRESHOLD_USD || "100");
@@ -25,6 +26,7 @@ async function fraudCheck(walletAddress) {
 }
 
 async function send(req, res, next) {
+  const txId = uuidv4();
   try {
     const { recipient_address, amount, asset = "XLM", memo } = req.body;
 
@@ -80,12 +82,15 @@ async function send(req, res, next) {
     });
 
     // Save to DB
-    const txId = uuidv4();
     await db.query(
       `INSERT INTO transactions (id, sender_wallet, recipient_wallet, amount, asset, memo, tx_hash, status)
        VALUES ($1,$2,$3,$4,$5,$6,$7,'completed')`,
       [txId, public_key, recipient_address, amount, asset, memo || null, transactionHash],
     );
+
+    const txData = { id: txId, tx_hash: transactionHash, ledger, amount, asset, sender: public_key, recipient: recipient_address };
+    webhook.deliver('payment.sent', txData).catch(() => {});
+    webhook.deliver('payment.received', txData).catch(() => {});
 
     res.json({
       message: "Payment sent successfully",
@@ -99,11 +104,20 @@ async function send(req, res, next) {
       },
     });
   } catch (err) {
+    // Insert failed transaction
+    await db.query(
+      `INSERT INTO transactions (id, sender_wallet, recipient_wallet, amount, asset, memo, tx_hash, status)
+       VALUES ($1,$2,$3,$4,$5,$6,$7,'failed')`,
+      [txId, public_key, recipient_address, amount, asset, memo || null, null],
+    );
+
     if (err.status === 400 || err.status === 500) {
+      webhook.deliver('payment.failed', { error: err.message }).catch(() => {});
       return res.status(err.status).json({ error: err.message });
     }
     if (err.response?.data) {
       const extras = err.response.data?.extras;
+      webhook.deliver('payment.failed', { error: 'Transaction failed', details: extras }).catch(() => {});
       return res.status(400).json({ error: "Transaction failed", details: extras });
     }
     next(err);
