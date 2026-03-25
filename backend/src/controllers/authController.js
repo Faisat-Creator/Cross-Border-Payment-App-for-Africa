@@ -6,6 +6,13 @@ const db = require('../db');
 const { createWallet } = require('../services/stellar');
 const { hashPIN, comparePIN, validatePIN } = require('../services/pin');
 const { sendVerificationEmail } = require('../services/email');
+const {
+  COOKIE_NAME,
+  COOKIE_OPTIONS,
+  signAccessToken,
+  generateRefreshToken,
+  refreshTokenExpiresAt,
+} = require('../utils/tokens');
 
 const TOKEN_TTL_MS = 96 * 60 * 60 * 1000; // 96 hours
 
@@ -75,11 +82,20 @@ async function login(req, res, next) {
       return res.status(403).json({ error: 'Please verify your email before logging in.' });
     }
 
-    const token = jwt.sign(
-      { userId: user.id, email: user.email, role: user.role },
-      process.env.JWT_SECRET,
-      { expiresIn: process.env.JWT_EXPIRES_IN || '7d' }
+    // Issue short-lived access token
+    const token = signAccessToken({ userId: user.id, email: user.email, role: user.role });
+
+    // Issue refresh token — store only the hash in DB
+    const { raw, hash } = generateRefreshToken();
+    const expiresAt = refreshTokenExpiresAt();
+    await db.query(
+      `INSERT INTO refresh_tokens (id, user_id, token_hash, expires_at)
+       VALUES ($1, $2, $3, $4)`,
+      [uuidv4(), user.id, hash, expiresAt]
     );
+
+    // Set refresh token as HttpOnly cookie
+    res.cookie(COOKIE_NAME, raw, COOKIE_OPTIONS);
 
     res.json({
       token,
@@ -201,4 +217,64 @@ async function verifyPIN(req, res, next) {
   }
 }
 
-module.exports = { register, login, verifyEmail, getMe, setPIN, verifyPIN };
+async function refresh(req, res, next) {
+  try {
+    const raw = req.cookies?.[COOKIE_NAME];
+    if (!raw) return res.status(401).json({ error: 'No refresh token' });
+
+    const hash = crypto.createHash('sha256').update(raw).digest('hex');
+
+    // Look up the token — must exist and not be expired
+    const result = await db.query(
+      `SELECT rt.id, rt.user_id, rt.expires_at,
+              u.email, u.role
+       FROM refresh_tokens rt
+       JOIN users u ON u.id = rt.user_id
+       WHERE rt.token_hash = $1`,
+      [hash]
+    );
+
+    const record = result.rows[0];
+    if (!record) return res.status(401).json({ error: 'Invalid refresh token' });
+    if (new Date(record.expires_at) < new Date()) {
+      // Clean up expired token
+      await db.query('DELETE FROM refresh_tokens WHERE id = $1', [record.id]);
+      res.clearCookie(COOKIE_NAME, { ...COOKIE_OPTIONS, maxAge: undefined });
+      return res.status(401).json({ error: 'Refresh token expired' });
+    }
+
+    // Rotate: delete old token, issue new one
+    const { raw: newRaw, hash: newHash } = generateRefreshToken();
+    const expiresAt = refreshTokenExpiresAt();
+
+    await db.query('DELETE FROM refresh_tokens WHERE id = $1', [record.id]);
+    await db.query(
+      `INSERT INTO refresh_tokens (id, user_id, token_hash, expires_at)
+       VALUES ($1, $2, $3, $4)`,
+      [uuidv4(), record.user_id, newHash, expiresAt]
+    );
+
+    const token = signAccessToken({ userId: record.user_id, email: record.email, role: record.role });
+
+    res.cookie(COOKIE_NAME, newRaw, COOKIE_OPTIONS);
+    res.json({ token });
+  } catch (err) {
+    next(err);
+  }
+}
+
+async function logout(req, res, next) {
+  try {
+    const raw = req.cookies?.[COOKIE_NAME];
+    if (raw) {
+      const hash = crypto.createHash('sha256').update(raw).digest('hex');
+      await db.query('DELETE FROM refresh_tokens WHERE token_hash = $1', [hash]);
+    }
+    res.clearCookie(COOKIE_NAME, { ...COOKIE_OPTIONS, maxAge: undefined });
+    res.json({ message: 'Logged out successfully' });
+  } catch (err) {
+    next(err);
+  }
+}
+
+module.exports = { register, login, refresh, logout, verifyEmail, getMe, setPIN, verifyPIN };

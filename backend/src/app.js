@@ -2,13 +2,14 @@ const express = require('express');
 const cors = require('cors');
 const helmet = require('helmet');
 const rateLimit = require('express-rate-limit');
+const cookieParser = require('cookie-parser');
 
 const requestId = require('./middleware/requestId');
 
 const authRoutes = require('./routes/auth');
 const walletRoutes = require('./routes/wallet');
 const paymentRoutes = require('./routes/payments');
-const kycRoutes = require('./routes/ kyc');
+const kycRoutes = require('./routes/kyc');
 const adminRoutes = require('./routes/admin');
 const webhookRoutes = require('./routes/webhooks');
 
@@ -17,6 +18,7 @@ const logger = require('./utils/logger');
 const app = express();
 
 app.use(requestId);
+app.use(cookieParser());
 app.use(helmet({
   contentSecurityPolicy: {
     directives: {
