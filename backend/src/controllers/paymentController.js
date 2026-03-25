@@ -1,6 +1,6 @@
 const { v4: uuidv4 } = require("uuid");
 const db = require("../db");
-const { sendPayment } = require("../services/stellar");
+const { sendPayment, sendPathPayment, findPaymentPath } = require("../services/stellar");
 const webhook = require("../services/webhook");
 
 // Configurable KYC transaction threshold in USD equivalent
@@ -170,4 +170,116 @@ async function history(req, res, next) {
   }
 }
 
-module.exports = { send, history };
+/**
+ * POST /api/payments/find-path
+ * Body: { source_asset, source_amount, destination_asset, recipient_address }
+ * Returns the best conversion path and estimated destination amount.
+ */
+async function findPath(req, res, next) {
+  try {
+    const { source_asset, source_amount, destination_asset, recipient_address } = req.body;
+    const result = await findPaymentPath(source_asset, source_amount, destination_asset, recipient_address);
+    if (!result) {
+      return res.status(404).json({ error: 'No conversion path found between these assets' });
+    }
+    res.json(result);
+  } catch (err) {
+    next(err);
+  }
+}
+
+/**
+ * POST /api/payments/send-path
+ * Executes a strict-send path payment.
+ * Body: { recipient_address, source_asset, source_amount, destination_asset,
+ *         destination_min_amount, path, memo }
+ */
+async function sendPath(req, res, next) {
+  const txId = uuidv4();
+  let public_key, recipient_address, source_amount, source_asset;
+  try {
+    ({
+      recipient_address,
+      source_asset = 'XLM',
+      source_amount,
+      destination_asset,
+      destination_min_amount,
+      path = [],
+      memo,
+    } = req.body);
+
+    // KYC check
+    const estimatedUSD = estimateUSDValue(source_amount, source_asset);
+    if (estimatedUSD >= KYC_THRESHOLD_USD) {
+      const kycResult = await db.query('SELECT kyc_status FROM users WHERE id = $1', [req.user.userId]);
+      const kycStatus = kycResult.rows[0]?.kyc_status || 'unverified';
+      if (kycStatus !== 'verified') {
+        return res.status(403).json({
+          error: `KYC verification required for transactions above $${KYC_THRESHOLD_USD} USD equivalent.`,
+          kyc_status: kycStatus,
+          code: 'KYC_REQUIRED',
+        });
+      }
+    }
+
+    const walletResult = await db.query(
+      'SELECT public_key, encrypted_secret_key FROM wallets WHERE user_id = $1',
+      [req.user.userId],
+    );
+    if (!walletResult.rows[0]) return res.status(404).json({ error: 'Wallet not found' });
+
+    ({ public_key, encrypted_secret_key } = walletResult.rows[0]);
+
+    if (recipient_address === public_key) {
+      return res.status(400).json({ error: 'Cannot send payment to your own wallet' });
+    }
+
+    const isSuspicious = await fraudCheck(public_key);
+    if (isSuspicious) {
+      return res.status(429).json({ error: 'Transaction limit reached. Please wait before sending again.' });
+    }
+
+    const { transactionHash, ledger } = await sendPathPayment({
+      senderPublicKey: public_key,
+      encryptedSecretKey: encrypted_secret_key,
+      recipientPublicKey: recipient_address,
+      sourceAsset: source_asset,
+      sourceAmount: source_amount,
+      destinationAsset: destination_asset,
+      destinationMinAmount: destination_min_amount,
+      path,
+      memo,
+    });
+
+    await db.query(
+      `INSERT INTO transactions (id, sender_wallet, recipient_wallet, amount, asset, memo, tx_hash, status)
+       VALUES ($1,$2,$3,$4,$5,$6,$7,'completed')`,
+      [txId, public_key, recipient_address, source_amount, source_asset, memo || null, transactionHash],
+    );
+
+    const txData = { id: txId, tx_hash: transactionHash, ledger, source_amount, source_asset, destination_asset, sender: public_key, recipient: recipient_address };
+    webhook.deliver('payment.sent', txData).catch(() => {});
+    webhook.deliver('payment.received', txData).catch(() => {});
+
+    res.json({
+      message: 'Path payment sent successfully',
+      transaction: { id: txId, tx_hash: transactionHash, ledger, source_amount, source_asset, destination_asset, recipient: recipient_address },
+    });
+  } catch (err) {
+    await db.query(
+      `INSERT INTO transactions (id, sender_wallet, recipient_wallet, amount, asset, memo, tx_hash, status)
+       VALUES ($1,$2,$3,$4,$5,$6,$7,'failed')`,
+      [txId, public_key || '', recipient_address || '', source_amount || '0', source_asset || 'XLM', null, null],
+    ).catch(() => {});
+
+    if (err.status === 400 || err.status === 500) {
+      return res.status(err.status).json({ error: err.message });
+    }
+    if (err.response?.data) {
+      return res.status(400).json({ error: 'Path payment failed', details: err.response.data?.extras });
+    }
+    next(err);
+  }
+}
+
+module.exports = { send, history, findPath, sendPath };
