@@ -1,6 +1,7 @@
 const db = require('../db');
 const { getBalance, getTransactions } = require('../services/stellar');
 const QRCode = require('qrcode');
+const cache = require('../utils/cache');
 
 async function getWallet(req, res, next) {
   try {
@@ -11,9 +12,19 @@ async function getWallet(req, res, next) {
     if (!result.rows[0]) return res.status(404).json({ error: 'Wallet not found' });
 
     const { public_key } = result.rows[0];
-    const balances = await getBalance(public_key);
+    const cacheKey = `balance:${public_key}`;
 
-    res.json({ public_key, balances });
+    // Try cache first
+    const cached = await cache.get(cacheKey);
+    if (cached) {
+      return res.json({ public_key, balances: cached, cached: true });
+    }
+
+    // Cache miss — hit Horizon
+    const balances = await getBalance(public_key);
+    await cache.set(cacheKey, balances, cache.BALANCE_TTL);
+
+    res.json({ public_key, balances, cached: false });
   } catch (err) {
     next(err);
   }

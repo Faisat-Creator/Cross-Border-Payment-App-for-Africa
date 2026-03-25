@@ -201,5 +201,4 @@ async function verifyPIN(req, res, next) {
   }
 }
 
-module.exports = { register, login, getMe, setPIN, verifyPIN };
-module.exports = { register, login, verifyEmail, getMe };
+module.exports = { register, login, verifyEmail, getMe, setPIN, verifyPIN };
