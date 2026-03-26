@@ -1,11 +1,15 @@
 import React, { useEffect, useState } from 'react';
 import { useNavigate } from 'react-router-dom';
-import { Send, Download, RefreshCw, Copy, CheckCheck } from 'lucide-react';
+import { Send, Download, RefreshCw, Copy, CheckCheck, FlaskConical } from 'lucide-react';
+import { Send, Download, RefreshCw, Copy, CheckCheck, Plus, Minus } from 'lucide-react';
 import { useAuth } from '../context/AuthContext';
 import api from '../utils/api';
-import { truncateAddress, CURRENCIES, convertFromXLM } from '../utils/currency';
+import { truncateAddress } from '../utils/currency';
+import { useExchangeRates } from '../hooks/useExchangeRates';
 import toast from 'react-hot-toast';
 import { useTranslation } from 'react-i18next';
+
+const IS_TESTNET = process.env.REACT_APP_STELLAR_NETWORK !== 'mainnet';
 
 export default function Dashboard() {
   const { user } = useAuth();
@@ -16,6 +20,8 @@ export default function Dashboard() {
   const [loading, setLoading] = useState(true);
   const [copied, setCopied] = useState(false);
   const [selectedCurrency, setSelectedCurrency] = useState('XLM');
+  const [funding, setFunding] = useState(false);
+  const { currencies, convertFromXLM, usingApproximateRates } = useExchangeRates();
 
   useEffect(() => {
     Promise.all([
@@ -34,6 +40,31 @@ export default function Dashboard() {
     setTimeout(() => setCopied(false), 2000);
   };
 
+  const fundWallet = async () => {
+    setFunding(true);
+    try {
+      const res = await api.post('/dev/fund-wallet');
+      toast.success(res.data.message);
+      // Refresh balance
+      const walletRes = await api.get('/wallet/balance');
+      setWallet(walletRes.data);
+    } catch (err) {
+      toast.error(err.response?.data?.error || 'Funding failed');
+    } finally {
+      setFunding(false);
+  const handleAnchorAction = async (action) => {
+    try {
+      const asset = 'USDC'; // Default to USDC for fiat ramps
+      const endpoint = action === 'deposit' ? '/anchor/deposit' : '/anchor/withdraw';
+      const res = await api.post(endpoint, { asset });
+      
+      // Open anchor iframe/popup
+      window.open(res.data.url, 'anchor', 'width=500,height=600');
+    } catch (err) {
+      toast.error(err.response?.data?.error || `Failed to ${action}`);
+    }
+  };
+
   const xlmBalance = wallet?.balances?.find(b => b.asset === 'XLM')?.balance || '0';
   const displayBalance = selectedCurrency === 'XLM'
     ? xlmBalance
@@ -47,6 +78,23 @@ export default function Dashboard() {
 
   return (
     <div className="px-4 py-6 max-w-lg mx-auto space-y-6">
+      {/* Testnet banner — development only */}
+      {IS_TESTNET && (
+        <div className="flex items-center justify-between bg-yellow-500/10 border border-yellow-500/30 rounded-xl px-4 py-3">
+          <div className="flex items-center gap-2 text-yellow-400 text-sm">
+            <FlaskConical size={15} />
+            <span>Testnet mode — funds have no real value</span>
+          </div>
+          <button
+            onClick={fundWallet}
+            disabled={funding}
+            className="text-xs bg-yellow-500 hover:bg-yellow-600 disabled:opacity-50 text-black font-semibold px-3 py-1.5 rounded-lg transition-colors"
+          >
+            {funding ? 'Funding…' : 'Fund wallet'}
+          </button>
+        </div>
+      )}
+
       {/* Greeting */}
       <div className="flex items-center justify-between">
         <div>
@@ -68,7 +116,7 @@ export default function Dashboard() {
 
         {/* Currency selector */}
         <div className="flex gap-2 flex-wrap mb-4">
-          {CURRENCIES.map(c => (
+          {currencies.map(c => (
             <button
               key={c.code}
               onClick={() => setSelectedCurrency(c.code)}
@@ -82,6 +130,11 @@ export default function Dashboard() {
             </button>
           ))}
         </div>
+        {usingApproximateRates && (
+          <p className="text-primary-200/90 text-xs mb-3 leading-snug">
+            {t('common.rates_disclaimer')}
+          </p>
+        )}
 
         {/* Wallet address */}
         <div className="flex items-center gap-2 bg-primary-800/40 rounded-lg px-3 py-2">
@@ -113,6 +166,28 @@ export default function Dashboard() {
             <Download size={20} />
           </div>
           <span className="font-semibold text-gray-900 dark:text-white">{t('dashboard.receive')}</span>
+        </button>
+      </div>
+
+      {/* Fiat on/off ramp buttons */}
+      <div className="grid grid-cols-2 gap-3">
+        <button
+          onClick={() => handleAnchorAction('deposit')}
+          className="bg-green-500/10 hover:bg-green-500/20 border border-green-500/30 rounded-xl p-4 flex items-center gap-3 shadow-sm transition-all"
+        >
+          <div className="w-10 h-10 bg-green-500/20 rounded-lg flex items-center justify-center text-green-500">
+            <Plus size={20} />
+          </div>
+          <span className="font-semibold text-green-600 dark:text-green-400">{t('dashboard.add_money') || 'Add Money'}</span>
+        </button>
+        <button
+          onClick={() => handleAnchorAction('withdraw')}
+          className="bg-blue-500/10 hover:bg-blue-500/20 border border-blue-500/30 rounded-xl p-4 flex items-center gap-3 shadow-sm transition-all"
+        >
+          <div className="w-10 h-10 bg-blue-500/20 rounded-lg flex items-center justify-center text-blue-500">
+            <Minus size={20} />
+          </div>
+          <span className="font-semibold text-blue-600 dark:text-blue-400">{t('dashboard.withdraw') || 'Withdraw'}</span>
         </button>
       </div>
 

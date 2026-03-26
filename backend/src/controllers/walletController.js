@@ -1,5 +1,6 @@
+const bcrypt = require('bcryptjs');
 const db = require('../db');
-const { getBalance, getTransactions } = require('../services/stellar');
+const { getBalance, getTransactions, decryptPrivateKey } = require('../services/stellar');
 const QRCode = require('qrcode');
 const cache = require('../utils/cache');
 
@@ -67,4 +68,31 @@ async function getWalletTransactions(req, res, next) {
   }
 }
 
-module.exports = { getWallet, getQRCode, getWalletTransactions };
+async function exportKey(req, res, next) {
+  try {
+    const { password } = req.body;
+    if (!password) return res.status(400).json({ error: 'Password is required' });
+
+    const userResult = await db.query(
+      'SELECT password_hash FROM users WHERE id = $1',
+      [req.user.userId]
+    );
+    if (!userResult.rows[0]) return res.status(404).json({ error: 'User not found' });
+
+    const valid = await bcrypt.compare(password, userResult.rows[0].password_hash);
+    if (!valid) return res.status(401).json({ error: 'Incorrect password' });
+
+    const walletResult = await db.query(
+      'SELECT encrypted_secret_key FROM wallets WHERE user_id = $1',
+      [req.user.userId]
+    );
+    if (!walletResult.rows[0]) return res.status(404).json({ error: 'Wallet not found' });
+
+    const secretKey = decryptPrivateKey(walletResult.rows[0].encrypted_secret_key);
+    res.json({ secret_key: secretKey });
+  } catch (err) {
+    next(err);
+  }
+}
+
+module.exports = { getWallet, getQRCode, getWalletTransactions, exportKey };

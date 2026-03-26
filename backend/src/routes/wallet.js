@@ -2,7 +2,7 @@ const router = require('express').Router();
 const { body, validationResult } = require('express-validator');
 const StellarSdk = require('@stellar/stellar-sdk');
 const authMiddleware = require('../middleware/auth');
-const { getWallet, getQRCode, getWalletTransactions } = require('../controllers/walletController');
+const { getWallet, getQRCode, getWalletTransactions, exportKey } = require('../controllers/walletController');
 const { getContacts, addContact, deleteContact } = require('../controllers/contactsController');
 
 const validate = (req, res, next) => {
@@ -16,6 +16,11 @@ router.use(authMiddleware);
 router.get('/balance', getWallet);
 router.get('/qr', getQRCode);
 router.get('/transactions', getWalletTransactions);
+router.post('/export-key',
+  [body('password').notEmpty().withMessage('Password is required')],
+  validate,
+  exportKey
+);
 router.get('/contacts', getContacts);
 router.post('/contacts',
   [

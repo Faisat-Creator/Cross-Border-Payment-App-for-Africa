@@ -1,9 +1,8 @@
 const crypto = require('crypto');
 const bcrypt = require('bcryptjs');
-const jwt = require('jsonwebtoken');
 const { v4: uuidv4 } = require('uuid');
 const db = require('../db');
-const { createWallet } = require('../services/stellar');
+const { createWallet, encryptPrivateKey } = require('../services/stellar');
 const { hashPIN, comparePIN, validatePIN } = require('../services/pin');
 const { sendVerificationEmail, sendPasswordResetEmail } = require('../services/email');
 const { generateSecret, verifyToken, generateBackupCodes, useBackupCode } = require('../services/twofa');
@@ -20,6 +19,8 @@ const PASSWORD_RESET_TTL_MS = 60 * 60 * 1000;
 
 const FORGOT_PASSWORD_MESSAGE = {
   message: 'If an account exists for this email, you will receive password reset instructions shortly.'
+  message:
+    'If an account exists for this email, you will receive password reset instructions shortly.',
 };
 
 function generateVerificationToken() {
@@ -30,7 +31,7 @@ function generateVerificationToken() {
 
 async function register(req, res, next) {
   try {
-    const { full_name, email, password, phone } = req.body;
+    const { full_name, email, password, phone, secret_key: importedSecretKey } = req.body;
 
     const existing = await db.query('SELECT id FROM users WHERE email = $1', [email]);
     if (existing.rows.length > 0) {
@@ -42,7 +43,19 @@ async function register(req, res, next) {
     const { raw, hashed } = generateVerificationToken();
     const expiresAt = new Date(Date.now() + TOKEN_TTL_MS);
 
-    const { publicKey, encryptedSecretKey } = await createWallet();
+    let publicKey, encryptedSecretKey;
+    if (importedSecretKey) {
+      // Validate and import existing Stellar keypair
+      const StellarSdk = require('@stellar/stellar-sdk');
+      if (!StellarSdk.StrKey.isValidEd25519SecretSeed(importedSecretKey)) {
+        return res.status(400).json({ error: 'Invalid Stellar secret key' });
+      }
+      const keypair = StellarSdk.Keypair.fromSecret(importedSecretKey);
+      publicKey = keypair.publicKey();
+      encryptedSecretKey = encryptPrivateKey(importedSecretKey);
+    } else {
+      ({ publicKey, encryptedSecretKey } = await createWallet());
+    }
 
     await db.query('BEGIN');
     await db.query(
@@ -58,6 +71,10 @@ async function register(req, res, next) {
 
     await sendVerificationEmail(email, raw);
     res.status(201).json({ message: 'Account created. Please verify your email before logging in.' });
+
+    res.status(201).json({
+      message: 'Account created. Please verify your email before logging in.',
+    });
   } catch (err) {
     await db.query('ROLLBACK').catch(() => {});
     next(err);
@@ -97,6 +114,8 @@ async function login(req, res, next) {
     }
 
     const token = signAccessToken({ userId: user.id, email: user.email, role: user.role });
+    const token = signAccessToken({ userId: user.id, email: user.email, role: user.role });
+
     const { raw, hash } = generateRefreshToken();
     const expiresAt = refreshTokenExpiresAt();
     
@@ -109,7 +128,12 @@ async function login(req, res, next) {
     res.cookie(COOKIE_NAME, raw, COOKIE_OPTIONS);
     res.json({
       token,
-      user: { id: user.id, full_name: user.full_name, email: user.email, wallet_address: user.public_key }
+      user: {
+        id: user.id,
+        full_name: user.full_name,
+        email: user.email,
+        wallet_address: user.public_key,
+      },
     });
   } catch (err) {
     next(err);
@@ -252,6 +276,11 @@ async function setPIN(req, res, next) {
       [pinHash, userId]
     );
 
+    await db.query(`UPDATE users SET pin_hash = $1, pin_setup_completed = true WHERE id = $2`, [
+      pinHash,
+      userId,
+    ]);
+
     res.json({ message: 'PIN set successfully' });
   } catch (err) {
     next(err);
@@ -267,12 +296,14 @@ async function verifyPIN(req, res, next) {
       `SELECT pin_hash FROM users WHERE id = $1`,
       [userId]
     );
+    const result = await db.query(`SELECT pin_hash FROM users WHERE id = $1`, [userId]);
 
     if (!result.rows[0]) {
       return res.status(404).json({ error: 'User not found' });
     }
 
     const { pin_hash } = result.rows[0];
+
     if (!pin_hash) {
       return res.status(400).json({ error: 'PIN not configured. Please set up a PIN first.' });
     }
@@ -322,7 +353,11 @@ async function refresh(req, res, next) {
       [uuidv4(), record.user_id, newHash, expiresAt]
     );
 
-    const token = signAccessToken({ userId: record.user_id, email: record.email, role: record.role });
+    const token = signAccessToken({
+      userId: record.user_id,
+      email: record.email,
+      role: record.role,
+    });
 
     res.cookie(COOKIE_NAME, newRaw, COOKIE_OPTIONS);
     res.json({ token });
@@ -358,10 +393,9 @@ async function forgotPassword(req, res, next) {
     const tokenHash = crypto.createHash('sha256').update(raw).digest('hex');
     const expiresAt = new Date(Date.now() + PASSWORD_RESET_TTL_MS);
 
-    await db.query(
-      'DELETE FROM password_reset_tokens WHERE user_id = $1 AND used_at IS NULL',
-      [userId]
-    );
+    await db.query('DELETE FROM password_reset_tokens WHERE user_id = $1 AND used_at IS NULL', [
+      userId,
+    ]);
     await db.query(
       `INSERT INTO password_reset_tokens (user_id, token_hash, expires_at) VALUES ($1, $2, $3)`,
       [userId, tokenHash, expiresAt]
@@ -413,6 +447,8 @@ async function resetPassword(req, res, next) {
 module.exports = {
   register,
   login,
+  refresh,
+  logout,
   verifyEmail,
   getMe,
   setPIN,
@@ -423,5 +459,5 @@ module.exports = {
   refresh,
   logout,
   forgotPassword,
-  resetPassword
+  resetPassword,
 };
