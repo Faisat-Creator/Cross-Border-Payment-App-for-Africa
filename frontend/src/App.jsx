@@ -12,6 +12,7 @@ import ResetPassword from "./pages/ResetPassword";
 import Dashboard from "./pages/Dashboard";
 import SendMoney from "./pages/SendMoney";
 import ReceiveMoney from "./pages/ReceiveMoney";
+import RequestMoney from "./pages/RequestMoney";
 import TransactionHistory from "./pages/TransactionHistory";
 import Profile from "./pages/Profile";
 import KYCVerification from "./pages/KYCVerification";
@@ -100,6 +101,7 @@ export default function App() {
               <Route path="dashboard" element={<Dashboard />} />
               <Route path="send" element={<SendMoney />} />
               <Route path="receive" element={<ReceiveMoney />} />
+              <Route path="request" element={<RequestMoney />} />
               <Route path="history" element={<TransactionHistory />} />
               <Route path="profile" element={<Profile />} />
               <Route path="kyc" element={<KYCVerification />} />

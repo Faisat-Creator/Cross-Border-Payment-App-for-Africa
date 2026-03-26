@@ -1,5 +1,5 @@
 import React, { useState, useEffect } from 'react';
-import { useNavigate } from 'react-router-dom';
+import { useNavigate, useSearchParams } from 'react-router-dom';
 import { ArrowLeft, Send, ChevronDown, Users, Camera } from 'lucide-react';
 import api from '../utils/api';
 import { CURRENCIES, convertFromXLM } from '../utils/currency';
@@ -11,11 +11,12 @@ import PINVerificationModal from '../components/PINVerificationModal';
 export default function SendMoney() {
   const navigate = useNavigate();
   const { t } = useTranslation();
+  const [searchParams] = useSearchParams();
   const [form, setForm] = useState({
-    recipient_address: '',
-    amount: '',
-    asset: 'XLM',
-    memo: '',
+    recipient_address: searchParams.get('to') || '',
+    amount: searchParams.get('amount') || '',
+    asset: searchParams.get('asset') || 'XLM',
+    memo: searchParams.get('memo') || '',
     memo_type: 'text'
   });
   const [contacts, setContacts] = useState([]);
@@ -24,6 +25,7 @@ export default function SendMoney() {
   const [showPINVerification, setShowPINVerification] = useState(false);
   const [loading, setLoading] = useState(false);
   const [confirmed, setConfirmed] = useState(false);
+  const [requestId] = useState(searchParams.get('request'));
 
   useEffect(() => {
     api.get('/wallet/contacts').then(r => setContacts(r.data.contacts || [])).catch(() => {});
@@ -57,7 +59,15 @@ export default function SendMoney() {
         payload.memo = m;
         payload.memo_type = form.memo_type;
       }
-      await api.post('/payments/send', payload);
+      const res = await api.post('/payments/send', payload);
+      
+      // Mark payment request as claimed if applicable
+      if (requestId) {
+        await api.post(`/payment-requests/${requestId}/claim`, {
+          txHash: res.data.transaction.tx_hash
+        }).catch(() => {});
+      }
+      
       toast.success(t('send.success'));
       navigate('/dashboard');
     } catch (err) {
