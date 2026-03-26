@@ -9,12 +9,18 @@ const requestId = require('./middleware/requestId');
 const authRoutes = require('./routes/auth');
 const walletRoutes = require('./routes/wallet');
 const paymentRoutes = require('./routes/payments');
+const paymentRequestRoutes = require('./routes/paymentRequests');
+const scheduledPaymentRoutes = require('./routes/scheduledPayments');
+const anchorRoutes = require('./routes/anchor');
 const kycRoutes = require('./routes/kyc');
 const adminRoutes = require('./routes/admin');
 const webhookRoutes = require('./routes/webhooks');
 const notificationRoutes = require('./routes/notifications');
+const stellarTomlRoutes = require('./routes/stellarToml');
+const analyticsRoutes = require('./routes/analytics');
 
 const logger = require('./utils/logger');
+const { runHealthChecks } = require('./services/health');
 
 const app = express();
 
@@ -54,14 +60,29 @@ app.use('/api/auth', authLimiter);
 app.use('/api/auth', authRoutes);
 app.use('/api/wallet', walletRoutes);
 app.use('/api/payments', paymentRoutes);
+app.use('/api/payment-requests', paymentRequestRoutes);
+app.use('/api/scheduled-payments', scheduledPaymentRoutes);
+app.use('/api/anchor', anchorRoutes);
+app.use('/api/analytics', analyticsRoutes);
 app.use('/api/kyc', kycRoutes);
 app.use('/api/admin', adminRoutes);
 app.use('/api/webhooks', webhookRoutes);
 app.use('/api/notifications', notificationRoutes);
+app.use('/', stellarTomlRoutes);
 
-app.get('/health', (req, res) =>
-  res.json({ status: 'ok', network: process.env.STELLAR_NETWORK || 'testnet' })
-);
+app.get('/health', async (req, res) => {
+  try {
+    const body = await runHealthChecks();
+    res.status(body.status === 'ok' ? 200 : 503).json(body);
+  } catch {
+    res.status(503).json({
+      status: 'degraded',
+      db: 'down',
+      stellar: 'down',
+      network: process.env.STELLAR_NETWORK || 'testnet',
+    });
+  }
+});
 
 app.use((err, req, res, next) => {
   logger.error(err.message, { requestId: req.requestId, stack: err.stack, status: err.status });

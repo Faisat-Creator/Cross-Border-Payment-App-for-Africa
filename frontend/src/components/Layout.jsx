@@ -1,6 +1,7 @@
 import React from 'react';
 import { Outlet, NavLink, useNavigate } from 'react-router-dom';
-import { LayoutDashboard, Send, Download, Clock, User, LogOut, Webhook, Sun, Moon, Bell, BellOff } from 'lucide-react';
+import { LayoutDashboard, Send, Download, Clock, Upload, Repeat2, User, LogOut, Webhook, Sun, Moon, Bell, BellOff } from 'lucide-react';
+import { LayoutDashboard, Send, Download, Clock, TrendingUp, User, LogOut, Webhook, Sun, Moon, Bell, BellOff } from 'lucide-react';
 import { useAuth } from '../context/AuthContext';
 import { useTheme } from '../context/ThemeContext';
 import { usePushNotifications } from '../hooks/usePushNotifications';
@@ -9,8 +10,10 @@ const navItems = [
   { to: '/dashboard', icon: LayoutDashboard, label: 'Dashboard' },
   { to: '/send', icon: Send, label: 'Send' },
   { to: '/receive', icon: Download, label: 'Receive' },
+  { to: '/request', icon: Upload, label: 'Request' },
+  { to: '/scheduled', icon: Repeat2, label: 'Scheduled' },
   { to: '/history', icon: Clock, label: 'History' },
-  { to: '/webhooks', icon: Webhook, label: 'Webhooks' },
+  { to: '/analytics', icon: TrendingUp, label: 'Analytics' },
   { to: '/profile', icon: User, label: 'Profile' },
 ];
 
