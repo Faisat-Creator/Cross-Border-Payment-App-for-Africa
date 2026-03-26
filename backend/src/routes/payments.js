@@ -1,4 +1,10 @@
 const router = require('express').Router();
+const { body, query, validationResult } = require('express-validator');
+const StellarSdk = require('@stellar/stellar-sdk');
+const authMiddleware = require('../middleware/auth');
+const idempotency = require('../middleware/idempotency');
+const paymentSendValidators = require('../validators/paymentSendValidators');
+const { send, history, exportCSV, estimateFee } = require('../controllers/paymentController');
 const { query, validationResult, body } = require('express-validator');
 const StellarSdk = require('@stellar/stellar-sdk');
 const authMiddleware = require('../middleware/auth');
@@ -48,6 +54,9 @@ const MAX_TRANSACTION_AMOUNT = parseFloat(process.env.MAX_TRANSACTION_AMOUNT || 
 
 router.use(authMiddleware);
 
+router.get('/estimate-fee', estimateFee);
+
+router.post('/send', paymentSendValidators, validate, idempotency, send);
 // Federation address resolution
 router.get('/resolve-federation',
   [query('address').notEmpty().withMessage('Address is required')],
@@ -121,6 +130,7 @@ router.get(
   history
 );
 
+router.get('/export', exportCSV);
 const VALID_ASSETS = ['XLM', 'USDC', 'NGN', 'GHS', 'KES'];
 
 router.post('/find-path',

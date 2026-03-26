@@ -2,7 +2,7 @@ const crypto = require('crypto');
 const bcrypt = require('bcryptjs');
 const { v4: uuidv4 } = require('uuid');
 const db = require('../db');
-const { createWallet } = require('../services/stellar');
+const { createWallet, encryptPrivateKey } = require('../services/stellar');
 const { hashPIN, comparePIN, validatePIN } = require('../services/pin');
 const { sendVerificationEmail, sendPasswordResetEmail } = require('../services/email');
 const {
@@ -29,7 +29,7 @@ function generateVerificationToken() {
 
 async function register(req, res, next) {
   try {
-    const { full_name, email, password, phone } = req.body;
+    const { full_name, email, password, phone, secret_key: importedSecretKey } = req.body;
 
     const existing = await db.query('SELECT id FROM users WHERE email = $1', [email]);
     if (existing.rows.length > 0) {
@@ -41,7 +41,19 @@ async function register(req, res, next) {
     const { raw, hashed } = generateVerificationToken();
     const expiresAt = new Date(Date.now() + TOKEN_TTL_MS);
 
-    const { publicKey, encryptedSecretKey } = await createWallet();
+    let publicKey, encryptedSecretKey;
+    if (importedSecretKey) {
+      // Validate and import existing Stellar keypair
+      const StellarSdk = require('@stellar/stellar-sdk');
+      if (!StellarSdk.StrKey.isValidEd25519SecretSeed(importedSecretKey)) {
+        return res.status(400).json({ error: 'Invalid Stellar secret key' });
+      }
+      const keypair = StellarSdk.Keypair.fromSecret(importedSecretKey);
+      publicKey = keypair.publicKey();
+      encryptedSecretKey = encryptPrivateKey(importedSecretKey);
+    } else {
+      ({ publicKey, encryptedSecretKey } = await createWallet());
+    }
 
     await db.query('BEGIN');
     await db.query(
