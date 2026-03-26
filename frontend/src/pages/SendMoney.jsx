@@ -2,7 +2,7 @@ import React, { useState, useEffect, useCallback } from 'react';
 import { useNavigate } from 'react-router-dom';
 import { ArrowLeft, Send, ChevronDown, Users, Camera, ArrowRightLeft } from 'lucide-react';
 import api from '../utils/api';
-import { CURRENCIES, convertFromXLM } from '../utils/currency';
+import { useExchangeRates } from '../hooks/useExchangeRates';
 import toast from 'react-hot-toast';
 import { useTranslation } from 'react-i18next';
 import QRScanner from '../components/QRScanner';
@@ -29,6 +29,7 @@ export default function SendMoney() {
   const [showPINVerification, setShowPINVerification] = useState(false);
   const [loading, setLoading] = useState(false);
   const [confirmed, setConfirmed] = useState(false);
+  const { currencies, convertFromXLM, usingApproximateRates } = useExchangeRates();
   const [pathResult, setPathResult] = useState(null);
   const [pathLoading, setPathLoading] = useState(false);
 
@@ -201,14 +202,21 @@ export default function SendMoney() {
                 onChange={e => setForm({ ...form, asset: e.target.value })}
                 className="appearance-none bg-gray-800 border border-gray-700 rounded-xl px-4 py-3 text-white focus:outline-none focus:border-primary-500 pr-8 transition-colors"
               >
-                {CURRENCIES.map(c => (
+                {currencies.map(c => (
                   <option key={c.code} value={c.code}>{c.flag} {c.code}</option>
                 ))}
               </select>
               <ChevronDown size={14} className="absolute right-2 top-1/2 -translate-y-1/2 text-gray-400 pointer-events-none" />
             </div>
           </div>
-          {estimatedValue && <p className="text-xs text-gray-500 mt-1">{estimatedValue}</p>}
+          {estimatedValue && (
+            <div className="mt-1 space-y-1">
+              <p className="text-xs text-gray-500">{estimatedValue}</p>
+              {usingApproximateRates && (
+                <p className="text-xs text-amber-500/90">{t('common.rates_disclaimer')}</p>
+              )}
+            </div>
+          )}
         </div>
 
         {/* Destination Asset (cross-asset toggle) */}

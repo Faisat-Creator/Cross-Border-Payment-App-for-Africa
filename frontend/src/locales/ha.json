@@ -12,7 +12,8 @@
     "retry": "Sai Batta",
     "sign_out": "Fita",
     "no_transactions": "Ba a sami ma'amaloli ba",
-    "see_all": "Duba duka"
+    "see_all": "Duba duka",
+    "rates_disclaimer": "Kudaden canji suna kusa da gaske kuma za a iya adana su. Farashin na ainihi yana sabunta kowane minti."
   },
   "welcome": {
     "tagline": "Biyan kuɗi na ƙetare iyaka da sauri da aminci ta hanyar Stellar blockchain",

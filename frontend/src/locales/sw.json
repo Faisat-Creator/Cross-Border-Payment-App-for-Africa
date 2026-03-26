@@ -12,7 +12,8 @@
     "retry": "Jaribi Tena",
     "sign_out": "Toka",
     "no_transactions": "Hakuna miamala iliyopatikana",
-    "see_all": "Ona yote"
+    "see_all": "Ona yote",
+    "rates_disclaimer": "Viwanzo vya ubadilishaji ni takribani na vinaweza kuhifadhiwa. Bei za sasa huhuishwa kila dakika takriban."
   },
   "welcome": {
     "tagline": "Malipo ya haraka na salama ya kimataifa yanayoendeshwa na Stellar blockchain",

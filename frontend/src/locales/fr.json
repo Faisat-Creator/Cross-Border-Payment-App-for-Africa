@@ -12,7 +12,8 @@
     "retry": "Réessayer",
     "sign_out": "Se déconnecter",
     "no_transactions": "Aucune transaction trouvée",
-    "see_all": "Voir tout"
+    "see_all": "Voir tout",
+    "rates_disclaimer": "Les taux sont approximatifs et peuvent être mis en cache. Actualisation environ chaque minute."
   },
   "welcome": {
     "tagline": "Paiements transfrontaliers rapides et sécurisés propulsés par la blockchain Stellar",
