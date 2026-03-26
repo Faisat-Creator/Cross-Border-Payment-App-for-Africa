@@ -16,6 +16,7 @@ const kycRoutes = require('./routes/kyc');
 const adminRoutes = require('./routes/admin');
 const webhookRoutes = require('./routes/webhooks');
 const notificationRoutes = require('./routes/notifications');
+const devRoutes = require('./routes/dev');
 const stellarTomlRoutes = require('./routes/stellarToml');
 const analyticsRoutes = require('./routes/analytics');
 
@@ -68,6 +69,7 @@ app.use('/api/kyc', kycRoutes);
 app.use('/api/admin', adminRoutes);
 app.use('/api/webhooks', webhookRoutes);
 app.use('/api/notifications', notificationRoutes);
+app.use('/api/dev', devRoutes);
 app.use('/', stellarTomlRoutes);
 
 app.get('/health', async (req, res) => {
