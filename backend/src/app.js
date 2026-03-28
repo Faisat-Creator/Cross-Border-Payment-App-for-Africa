@@ -21,6 +21,7 @@ const sep31Routes = require('./routes/sep31');
 const devRoutes = require('./routes/dev');
 const stellarTomlRoutes = require('./routes/stellarToml');
 const analyticsRoutes = require('./routes/analytics');
+const dexRoutes = require('./routes/dex');
 
 const swaggerJsdoc = require('swagger-jsdoc');
 const swaggerUi = require('swagger-ui-express');
@@ -70,6 +71,7 @@ app.use('/api/payment-requests', paymentRequestRoutes);
 app.use('/api/scheduled-payments', scheduledPaymentRoutes);
 app.use('/api/anchor', anchorRoutes);
 app.use('/api/analytics', analyticsRoutes);
+app.use('/api/dex', dexRoutes);
 app.use('/api/kyc', kycRoutes);
 app.use('/api/admin', adminRoutes);
 app.use('/api/webhooks', webhookRoutes);
