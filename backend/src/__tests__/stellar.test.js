@@ -270,7 +270,7 @@ describe('sendPayment', () => {
       amount: '10',
       asset: 'XLM'
     });
-    expect(result).toEqual({ transactionHash: 'abc123hash', ledger: 42 });
+    expect(result).toEqual(expect.objectContaining({ transactionHash: 'abc123hash', ledger: 42 }));
   });
 
   test('calls submitTransaction exactly once', async () => {
@@ -567,3 +567,67 @@ function buildMockStellarAccount(publicKey) {
     signers: [{ key: publicKey, weight: 1 }]
   };
 }
+
+// ============================================================
+// sendPayment — tx_bad_seq retry
+// ============================================================
+describe('sendPayment tx_bad_seq retry', () => {
+  const keypair = StellarSdk.Keypair.random();
+  const recipient = StellarSdk.Keypair.random().publicKey();
+
+  function makeBadSeqError() {
+    return {
+      response: {
+        status: 400,
+        data: { extras: { result_codes: { transaction: 'tx_bad_seq' } } }
+      }
+    };
+  }
+
+  test('retries on tx_bad_seq and succeeds on second attempt', async () => {
+    mockServer.loadAccount.mockResolvedValue(mockAccount(keypair.publicKey()));
+    mockServer.fetchBaseFee.mockResolvedValue(100);
+
+    let calls = 0;
+    mockServer.submitTransaction.mockImplementation(async () => {
+      calls++;
+      if (calls === 1) throw makeBadSeqError();
+      return { hash: 'retried_hash', ledger: 42 };
+    });
+
+    const encryptedSecretKey = encryptAndReturn(keypair.secret());
+    const result = await stellar.sendPayment({
+      senderPublicKey: keypair.publicKey(),
+      encryptedSecretKey,
+      recipientPublicKey: recipient,
+      amount: '10',
+      asset: 'XLM'
+    });
+
+    expect(result.transactionHash).toBe('retried_hash');
+    expect(mockServer.submitTransaction).toHaveBeenCalledTimes(2);
+    // loadAccount called twice — fresh sequence number each attempt
+    expect(mockServer.loadAccount).toHaveBeenCalledTimes(2);
+  });
+
+  test('throws after exhausting max retries on persistent tx_bad_seq', async () => {
+    mockServer.loadAccount.mockResolvedValue(mockAccount(keypair.publicKey()));
+    mockServer.fetchBaseFee.mockResolvedValue(100);
+    mockServer.submitTransaction.mockRejectedValue(makeBadSeqError());
+
+    const encryptedSecretKey = encryptAndReturn(keypair.secret());
+    await expect(
+      stellar.sendPayment({
+        senderPublicKey: keypair.publicKey(),
+        encryptedSecretKey,
+        recipientPublicKey: recipient,
+        amount: '10',
+        asset: 'XLM'
+      })
+    ).rejects.toMatchObject({
+      response: { data: { extras: { result_codes: { transaction: 'tx_bad_seq' } } } }
+    });
+
+    expect(mockServer.submitTransaction).toHaveBeenCalledTimes(3); // MAX_SEQ_RETRIES
+  });
+});

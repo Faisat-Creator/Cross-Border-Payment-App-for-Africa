@@ -2,8 +2,8 @@ const StellarSdk = require('@stellar/stellar-sdk');
 const crypto = require('crypto');
 const logger = require('../utils/logger');
 const { withRetry } = require('../utils/retry');
-
 const { withTimeout } = require('../utils/withTimeout');
+const { enqueue } = require('../utils/txQueue');
 
 const isTestnet = process.env.STELLAR_NETWORK !== 'mainnet';
 const server = new StellarSdk.Horizon.Server(
@@ -13,7 +13,10 @@ const networkPassphrase = isTestnet
   ? StellarSdk.Networks.TESTNET
   : StellarSdk.Networks.PUBLIC;
 
-// Encrypt private key before storing
+// ---------------------------------------------------------------------------
+// Key encryption helpers
+// ---------------------------------------------------------------------------
+
 function encryptPrivateKey(secretKey) {
   const key = Buffer.from(process.env.ENCRYPTION_KEY, 'utf8').slice(0, 32);
   const iv = crypto.randomBytes(16);
@@ -31,13 +34,15 @@ function decryptPrivateKey(encryptedKey) {
   return Buffer.concat([decipher.update(encrypted), decipher.final()]).toString('utf8');
 }
 
-// Generate a new Stellar keypair
+// ---------------------------------------------------------------------------
+// Wallet creation
+// ---------------------------------------------------------------------------
+
 async function createWallet() {
   const keypair = StellarSdk.Keypair.random();
   const publicKey = keypair.publicKey();
   const secretKey = keypair.secret();
 
-  // Fund account on testnet via Friendbot
   if (isTestnet) {
     try {
       await fetch(`https://friendbot.stellar.org?addr=${publicKey}`);
@@ -46,13 +51,13 @@ async function createWallet() {
     }
   }
 
-  return {
-    publicKey,
-    encryptedSecretKey: encryptPrivateKey(secretKey)
-  };
+  return { publicKey, encryptedSecretKey: encryptPrivateKey(secretKey) };
 }
 
-// Get account balance
+// ---------------------------------------------------------------------------
+// Balance
+// ---------------------------------------------------------------------------
+
 async function getBalance(publicKey) {
   try {
     const account = await withRetry(() => server.loadAccount(publicKey), { label: 'loadAccount' });
@@ -66,10 +71,12 @@ async function getBalance(publicKey) {
   }
 }
 
-// Resolve a Stellar Asset object, validating issuer config for non-XLM assets
+// ---------------------------------------------------------------------------
+// Asset / trustline helpers
+// ---------------------------------------------------------------------------
+
 function resolveAsset(asset) {
   if (asset === 'XLM') return StellarSdk.Asset.native();
-
   const issuer = process.env[`${asset}_ISSUER`];
   if (!issuer) {
     const err = new Error(`${asset}_ISSUER is not configured. Cannot send ${asset} payments.`);
@@ -79,7 +86,6 @@ function resolveAsset(asset) {
   return new StellarSdk.Asset(asset, issuer);
 }
 
-// Check that the recipient has a trustline for the given asset
 async function checkTrustline(recipientPublicKey, assetObj) {
   let recipientAccount;
   try {
@@ -106,6 +112,10 @@ async function checkTrustline(recipientPublicKey, assetObj) {
   }
 }
 
+// ---------------------------------------------------------------------------
+// Memo helpers
+// ---------------------------------------------------------------------------
+
 const MEMO_ID_MAX = 2n ** 64n - 1n;
 
 function memoValidationError(message) {
@@ -114,11 +124,6 @@ function memoValidationError(message) {
   return err;
 }
 
-/**
- * Build a Stellar memo from user input. Default type is `text` (max 28 chars).
- * @param {string} memo - trimmed memo payload
- * @param {string} [memoType='text'] - text | id | hash | return
- */
 function buildStellarMemo(memo, memoType = 'text') {
   if (!memo) return null;
   const type = (memoType || 'text').toLowerCase();
@@ -151,12 +156,12 @@ function buildStellarMemo(memo, memoType = 'text') {
   }
 }
 
-// Create claimable balance for offline recipient
-async function createClaimableBalance({
-// Resolve federation address to public key
+// ---------------------------------------------------------------------------
+// Federation address resolution
+// ---------------------------------------------------------------------------
+
 async function resolveFederationAddress(address) {
   if (!address.includes('*')) return address;
-  
   try {
     const federationServer = new StellarSdk.FederationServer(
       `https://${address.split('*')[1]}/.well-known/stellar.toml`
@@ -170,8 +175,11 @@ async function resolveFederationAddress(address) {
   }
 }
 
-// Send payment
-async function sendPayment({
+// ---------------------------------------------------------------------------
+// Claimable balance (fallback for non-existent recipient accounts)
+// ---------------------------------------------------------------------------
+
+async function createClaimableBalance({
   senderPublicKey,
   encryptedSecretKey,
   recipientPublicKey,
@@ -180,14 +188,7 @@ async function sendPayment({
   memo,
   memoType = 'text'
 }) {
-  const resolvedRecipient = await resolveFederationAddress(recipientPublicKey);
   const assetObj = resolveAsset(asset);
-
-  // Trustline check is only required for non-native assets
-  if (asset !== 'XLM') {
-    await checkTrustline(resolvedRecipient, assetObj);
-  }
-
   const secretKey = decryptPrivateKey(encryptedSecretKey);
   const senderKeypair = StellarSdk.Keypair.fromSecret(secretKey);
   const senderAccount = await withRetry(() => server.loadAccount(senderPublicKey), { label: 'loadAccount(sender)' });
@@ -197,17 +198,11 @@ async function sendPayment({
     networkPassphrase
   })
     .addOperation(StellarSdk.Operation.createClaimableBalance({
-    .addOperation(StellarSdk.Operation.payment({
-      destination: resolvedRecipient,
       asset: assetObj,
       amount: String(amount),
       claimants: [
-        {
-          destination: recipientPublicKey,
-          predicate: StellarSdk.Predicate.predUnconditional()
-        }
-      ],
-      clawbackEnabled: true
+        new StellarSdk.Claimant(recipientPublicKey, StellarSdk.Claimant.predicateUnconditional())
+      ]
     }))
     .setTimeout(30);
 
@@ -217,45 +212,25 @@ async function sendPayment({
   const transaction = txBuilder.build();
   transaction.sign(senderKeypair);
 
-  const result = await server.submitTransaction(transaction);
-  
-  // Extract claimable balance ID from result
-  const claimableBalanceId = result.result_meta_xdr 
-    ? extractClaimableBalanceId(result) 
-    : null;
-
   const result = await withRetry(() => server.submitTransaction(transaction), { label: 'submitTransaction' });
-  return {
-    transactionHash: result.hash,
-    ledger: result.ledger,
-    claimableBalanceId
-  };
+  return { transactionHash: result.hash, ledger: result.ledger };
 }
 
-// Extract claimable balance ID from transaction result
-function extractClaimableBalanceId(result) {
-  try {
-    const xdr = StellarSdk.xdr.TransactionMeta.fromXDR(result.result_meta_xdr, 'base64');
-    const operations = xdr.v3().operations();
-    for (const op of operations) {
-      const changes = op.changes();
-      for (const change of changes) {
-        if (change.discriminant().name === 'ledgerEntryCreated') {
-          const entry = change.created().data();
-          if (entry.discriminant().name === 'claimableBalance') {
-            return entry.claimableBalance().balanceId().claimableBalanceId().toString('hex');
-          }
-        }
-      }
-    }
-  } catch (e) {
-    logger.warn('Failed to extract claimable balance ID', { error: e.message });
-  }
-  return null;
+// ---------------------------------------------------------------------------
+// Send payment — per-wallet queue + tx_bad_seq retry
+// ---------------------------------------------------------------------------
+
+const MAX_SEQ_RETRIES = 3;
+
+function isBadSeq(err) {
+  return err.response?.data?.extras?.result_codes?.transaction === 'tx_bad_seq';
 }
 
-// Send payment
-async function sendPayment({
+async function sendPayment(params) {
+  return enqueue(params.senderPublicKey, () => _sendPaymentOnce(params));
+}
+
+async function _sendPaymentOnce({
   senderPublicKey,
   encryptedSecretKey,
   recipientPublicKey,
@@ -266,62 +241,68 @@ async function sendPayment({
 }) {
   const assetObj = resolveAsset(asset);
 
-  try {
-    // Trustline check is only required for non-native assets
-    if (asset !== 'XLM') {
-      await checkTrustline(recipientPublicKey, assetObj);
-    }
-
-    const secretKey = decryptPrivateKey(encryptedSecretKey);
-    const senderKeypair = StellarSdk.Keypair.fromSecret(secretKey);
-    const senderAccount = await server.loadAccount(senderPublicKey);
-
-    const txBuilder = new StellarSdk.TransactionBuilder(senderAccount, {
-      fee: await server.fetchBaseFee(),
-      networkPassphrase
-    })
-      .addOperation(StellarSdk.Operation.payment({
-        destination: recipientPublicKey,
-        asset: assetObj,
-        amount: String(amount)
-      }))
-      .setTimeout(30);
-
-    const memoObj = memo ? buildStellarMemo(memo, memoType) : null;
-    if (memoObj) txBuilder.addMemo(memoObj);
-
-    const transaction = txBuilder.build();
-    transaction.sign(senderKeypair);
-
-    const result = await server.submitTransaction(transaction);
-    return {
-      transactionHash: result.hash,
-      ledger: result.ledger,
-      type: 'payment'
-    };
-  } catch (err) {
-    // Fallback to claimable balance if account doesn't exist
-    if (err.response?.status === 400 && err.response?.data?.extras?.result_codes?.transaction === 'tx_failed') {
-      logger.info('Account not found, creating claimable balance', { recipient: recipientPublicKey });
-      const result = await createClaimableBalance({
-        senderPublicKey,
-        encryptedSecretKey,
-        recipientPublicKey,
-        amount,
-        asset,
-        memo,
-        memoType
-      });
-      return {
-        ...result,
-        type: 'claimable_balance'
-      };
-    }
-    throw err;
+  if (asset !== 'XLM') {
+    await checkTrustline(recipientPublicKey, assetObj);
   }
+
+  const secretKey = decryptPrivateKey(encryptedSecretKey);
+  const senderKeypair = StellarSdk.Keypair.fromSecret(secretKey);
+
+  let lastErr;
+  for (let attempt = 0; attempt < MAX_SEQ_RETRIES; attempt++) {
+    try {
+      // Fetch a fresh sequence number on every attempt
+      const senderAccount = await server.loadAccount(senderPublicKey);
+
+      const txBuilder = new StellarSdk.TransactionBuilder(senderAccount, {
+        fee: await server.fetchBaseFee(),
+        networkPassphrase
+      })
+        .addOperation(StellarSdk.Operation.payment({
+          destination: recipientPublicKey,
+          asset: assetObj,
+          amount: String(amount)
+        }))
+        .setTimeout(30);
+
+      const memoObj = memo ? buildStellarMemo(memo, memoType) : null;
+      if (memoObj) txBuilder.addMemo(memoObj);
+
+      const transaction = txBuilder.build();
+      transaction.sign(senderKeypair);
+
+      const result = await server.submitTransaction(transaction);
+      return { transactionHash: result.hash, ledger: result.ledger, type: 'payment' };
+    } catch (err) {
+      if (isBadSeq(err) && attempt < MAX_SEQ_RETRIES - 1) {
+        logger.warn('tx_bad_seq detected, retrying with fresh sequence number', {
+          attempt: attempt + 1,
+          senderPublicKey
+        });
+        lastErr = err;
+        continue;
+      }
+
+      // Fallback to claimable balance if recipient account doesn't exist
+      if (err.response?.status === 400 && err.response?.data?.extras?.result_codes?.transaction === 'tx_failed') {
+        logger.info('Account not found, creating claimable balance', { recipient: recipientPublicKey });
+        const result = await createClaimableBalance({
+          senderPublicKey, encryptedSecretKey, recipientPublicKey, amount, asset, memo, memoType
+        });
+        return { ...result, type: 'claimable_balance' };
+      }
+
+      throw err;
+    }
+  }
+
+  throw lastErr;
 }
 
-// Fetch recent transactions for an account
+// ---------------------------------------------------------------------------
+// Transaction history
+// ---------------------------------------------------------------------------
+
 async function getTransactions(publicKey, limit = 20) {
   try {
     const records = await server
@@ -342,17 +323,18 @@ async function getTransactions(publicKey, limit = 20) {
   }
 }
 
+// ---------------------------------------------------------------------------
+// Fee estimate
+// ---------------------------------------------------------------------------
+
 async function fetchFee() {
   return withRetry(() => server.fetchBaseFee(), { label: 'fetchBaseFee' });
 }
 
-module.exports = { createWallet, getBalance, sendPayment, getTransactions, decryptPrivateKey, encryptPrivateKey, fetchFee };
-module.exports = { createWallet, getBalance, sendPayment, getTransactions, decryptPrivateKey, createClaimableBalance };
-module.exports = { createWallet, getBalance, sendPayment, getTransactions, decryptPrivateKey, resolveFederationAddress };
-/**
- * Lightweight Horizon reachability check (SDK v12 has no serverInfo(); this is equivalent).
- * Uses latest ledger page with a hard timeout.
- */
+// ---------------------------------------------------------------------------
+// Horizon health check
+// ---------------------------------------------------------------------------
+
 async function checkHorizonHealth() {
   try {
     await withTimeout(server.ledgers().order('desc').limit(1).call());
@@ -360,16 +342,13 @@ async function checkHorizonHealth() {
   } catch {
     return false;
   }
- * Find the best path for a strict-send cross-asset payment.
- * Returns the top path result from Horizon's path-finding API.
- *
- * @param {string} sourceAsset       - Asset the sender is spending (e.g. 'XLM')
- * @param {string} sourceAmount      - Amount the sender will spend
- * @param {string} destinationAsset  - Asset the recipient should receive
- * @param {string} destinationPublicKey - Recipient's Stellar public key
- * @returns {{ destinationAmount, path }} or null if no path found
- */
-async function findPaymentPath(sourceAsset, sourceAmount, destinationAsset, destinationPublicKey) {
+}
+
+// ---------------------------------------------------------------------------
+// Path payment helpers
+// ---------------------------------------------------------------------------
+
+async function findPaymentPath(sourceAsset, sourceAmount, destinationAsset) {
   const srcAsset = resolveAsset(sourceAsset);
   const dstAsset = resolveAsset(destinationAsset);
 
@@ -379,22 +358,13 @@ async function findPaymentPath(sourceAsset, sourceAmount, destinationAsset, dest
 
   if (!result.records || result.records.length === 0) return null;
 
-  // Pick the record with the highest destination_amount
   const best = result.records.reduce((a, b) =>
     parseFloat(a.destination_amount) >= parseFloat(b.destination_amount) ? a : b
   );
 
-  return {
-    destinationAmount: best.destination_amount,
-    path: best.path,
-  };
+  return { destinationAmount: best.destination_amount, path: best.path };
 }
 
-/**
- * Execute a strict-send path payment.
- * Sender spends exactly `amount` of `sourceAsset`; recipient receives
- * at least `destinationMinAmount` of `destinationAsset`.
- */
 async function sendPathPayment({
   senderPublicKey,
   encryptedSecretKey,
@@ -409,7 +379,6 @@ async function sendPathPayment({
   const srcAsset = resolveAsset(sourceAsset);
   const dstAsset = resolveAsset(destinationAsset);
 
-  // Trustline check for non-native destination asset
   if (destinationAsset !== 'XLM') {
     await checkTrustline(recipientPublicKey, dstAsset);
   }
@@ -418,8 +387,7 @@ async function sendPathPayment({
   const senderKeypair = StellarSdk.Keypair.fromSecret(secretKey);
   const senderAccount = await server.loadAccount(senderPublicKey);
 
-  // Convert path array (from Horizon) to StellarSdk Asset objects
-  const sdkPath = path.map((p) =>
+  const sdkPath = path.map(p =>
     p.asset_type === 'native'
       ? StellarSdk.Asset.native()
       : new StellarSdk.Asset(p.asset_code, p.asset_issuer)
@@ -427,18 +395,16 @@ async function sendPathPayment({
 
   const txBuilder = new StellarSdk.TransactionBuilder(senderAccount, {
     fee: await server.fetchBaseFee(),
-    networkPassphrase,
+    networkPassphrase
   })
-    .addOperation(
-      StellarSdk.Operation.pathPaymentStrictSend({
-        sendAsset: srcAsset,
-        sendAmount: String(sourceAmount),
-        destination: recipientPublicKey,
-        destAsset: dstAsset,
-        destMin: String(destinationMinAmount),
-        path: sdkPath,
-      })
-    )
+    .addOperation(StellarSdk.Operation.pathPaymentStrictSend({
+      sendAsset: srcAsset,
+      sendAmount: String(sourceAmount),
+      destination: recipientPublicKey,
+      destAsset: dstAsset,
+      destMin: String(destinationMinAmount),
+      path: sdkPath
+    }))
     .setTimeout(30);
 
   if (memo) txBuilder.addMemo(StellarSdk.Memo.text(memo.slice(0, 28)));
@@ -450,15 +416,21 @@ async function sendPathPayment({
   return { transactionHash: result.hash, ledger: result.ledger };
 }
 
+// ---------------------------------------------------------------------------
+// Exports
+// ---------------------------------------------------------------------------
+
 module.exports = {
   createWallet,
   getBalance,
   sendPayment,
   getTransactions,
+  encryptPrivateKey,
   decryptPrivateKey,
+  fetchFee,
   checkHorizonHealth,
-  sendPathPayment,
   findPaymentPath,
-  getTransactions,
-  decryptPrivateKey,
+  sendPathPayment,
+  resolveFederationAddress,
+  createClaimableBalance,
 };
