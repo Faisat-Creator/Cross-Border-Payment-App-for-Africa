@@ -18,6 +18,7 @@ const {
   resetPassword,
 } = require('../controllers/authController');
 const authMiddleware = require('../middleware/auth');
+const geoRestriction = require('../middleware/geoRestriction');
 
 const validate = (req, res, next) => {
   const errors = validationResult(req);
@@ -27,6 +28,7 @@ const validate = (req, res, next) => {
 
 router.post(
   '/register',
+  geoRestriction,
   [
     body('full_name').trim().notEmpty().withMessage('Full name is required'),
     body('email').isEmail().normalizeEmail(),
@@ -38,6 +40,7 @@ router.post(
 
 router.post(
   '/login',
+  geoRestriction,
   [body('email').isEmail().normalizeEmail(), body('password').notEmpty()],
   validate,
   login
