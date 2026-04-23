@@ -20,6 +20,7 @@ const walletRoutes = require('./routes/wallet');
 const paymentRoutes = require('./routes/payments');
 const kycRoutes = require('./routes/kyc');
 const adminRoutes = require('./routes/admin');
+const { getStatus } = require('./services/horizonRateLimit');
 
 validateEnv();
 
@@ -55,7 +56,7 @@ app.use('/api/kyc', kycRoutes);
 app.use('/api/admin', adminRoutes);
 
 app.get('/health', (req, res) =>
-  res.json({ status: 'ok', network: process.env.STELLAR_NETWORK || 'testnet' })
+  res.json({ status: 'ok', network: process.env.STELLAR_NETWORK || 'testnet', horizon: getStatus() })
 );
 
 app.use((err, req, res, next) => {

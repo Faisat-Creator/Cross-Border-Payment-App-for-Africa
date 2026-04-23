@@ -4,6 +4,7 @@ const StellarSdk = require('@stellar/stellar-sdk');
 const authMiddleware = require('../middleware/auth');
 const { getWallet, getQRCode, getWalletTransactions } = require('../controllers/walletController');
 const { getContacts, addContact, deleteContact } = require('../controllers/contactsController');
+const { getStatus } = require('../services/horizonRateLimit');
 
 const validate = (req, res, next) => {
   const errors = validationResult(req);
@@ -36,5 +37,7 @@ router.post('/contacts',
   addContact
 );
 router.delete('/contacts/:id', deleteContact);
+
+router.get('/horizon-status', (req, res) => res.json(getStatus()));
 
 module.exports = router;
