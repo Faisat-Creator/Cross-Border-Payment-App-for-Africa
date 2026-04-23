@@ -1,6 +1,6 @@
 import React, { useEffect, useState, useCallback } from 'react';
 import { useNavigate } from 'react-router-dom';
-import { Send, Download, RefreshCw, Copy, CheckCheck, FlaskConical, Plus, Minus } from 'lucide-react';
+import { Send, Download, RefreshCw, Copy, CheckCheck, FlaskConical, Plus, Minus, PiggyBank } from 'lucide-react';
 import { useAuth } from '../context/AuthContext';
 import { BalanceCardSkeleton, TransactionRowSkeleton } from '../components/Skeleton';
 import api from '../utils/api';
@@ -202,13 +202,13 @@ export default function Dashboard() {
           <span className="font-semibold text-gray-900 dark:text-white">{t('dashboard.send')}</span>
         </button>
         <button
-          onClick={() => navigate('/receive')}
+          onClick={() => navigate('/save')}
           className="bg-white dark:bg-gray-800 hover:bg-gray-50 dark:hover:bg-gray-700 border border-gray-100 dark:border-gray-700 rounded-xl p-4 flex items-center gap-3 shadow-sm transition-all"
         >
-          <div className="w-10 h-10 bg-primary-500/10 rounded-lg flex items-center justify-center text-primary-500">
-            <Download size={20} />
+          <div className="w-10 h-10 bg-green-500/10 rounded-lg flex items-center justify-center text-green-500">
+            <PiggyBank size={20} />
           </div>
-          <span className="font-semibold text-gray-900 dark:text-white">{t('dashboard.receive')}</span>
+          <span className="font-semibold text-gray-900 dark:text-white">Save</span>
         </button>
       </div>
 
