@@ -92,15 +92,54 @@ async function login(req, res, next) {
     const { email, password, totp_code } = req.body;
 
     const result = await db.query(
-      `SELECT u.id, u.full_name, u.email, u.password_hash, u.email_verified, u.role, u.totp_enabled, u.totp_secret, w.public_key
+      `SELECT u.id, u.full_name, u.email, u.password_hash, u.email_verified, u.role, u.totp_enabled, u.totp_secret, u.failed_login_attempts, u.locked_until, w.public_key
        FROM users u LEFT JOIN wallets w ON w.user_id = u.id
        WHERE u.email = $1`,
       [email]
     );
 
     const user = result.rows[0];
-    if (!user || !(await bcrypt.compare(password, user.password_hash))) {
-      if (user) audit.log(user.id, 'login_failure', req.ip, req.headers['user-agent']);
+    const now = new Date();
+
+    if (user && user.locked_until) {
+      const lockUntil = new Date(user.locked_until);
+      if (now < lockUntil) {
+        return res.status(423).json({
+          error: `Account locked until ${lockUntil.toISOString()}`,
+        });
+      }
+
+      await db.query(
+        `UPDATE users SET failed_login_attempts = 0, locked_until = NULL WHERE id = $1`,
+        [user.id]
+      );
+      user.failed_login_attempts = 0;
+      user.locked_until = null;
+    }
+
+    const isValidPassword = user && (await bcrypt.compare(password, user.password_hash));
+    if (!user || !isValidPassword) {
+      if (user) {
+        const attempts = (user.failed_login_attempts || 0) + 1;
+        if (attempts >= 10) {
+          const lockedUntil = new Date(Date.now() + 30 * 60 * 1000);
+          await db.query(
+            `UPDATE users SET failed_login_attempts = $1, locked_until = $2 WHERE id = $3`,
+            [attempts, lockedUntil, user.id]
+          );
+          audit.log(user.id, 'login_failure', req.ip, req.headers['user-agent']);
+          return res.status(423).json({
+            error: `Account locked until ${lockedUntil.toISOString()}`,
+          });
+        }
+
+        await db.query(
+          `UPDATE users SET failed_login_attempts = $1 WHERE id = $2`,
+          [attempts, user.id]
+        );
+        audit.log(user.id, 'login_failure', req.ip, req.headers['user-agent']);
+      }
+
       return res.status(401).json({ error: 'Invalid email or password' });
     }
 
@@ -119,6 +158,11 @@ async function login(req, res, next) {
         return res.status(401).json({ error: 'Invalid TOTP code' });
       }
     }
+
+    await db.query(
+      `UPDATE users SET failed_login_attempts = 0, locked_until = NULL WHERE id = $1`,
+      [user.id]
+    );
 
     const token = signAccessToken({ userId: user.id, email: user.email, role: user.role });
 
