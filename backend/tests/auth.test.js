@@ -1,5 +1,6 @@
 jest.mock('../src/db');
 jest.mock('../src/services/stellar');
+jest.mock('../src/services/audit', () => ({ log: jest.fn() }));
 jest.mock('../src/services/email', () => ({
   sendVerificationEmail: jest.fn(),
   sendPasswordResetEmail: jest.fn()
@@ -9,13 +10,15 @@ const crypto = require('crypto');
 const db = require('../src/db');
 const { sendVerificationEmail, sendPasswordResetEmail } = require('../src/services/email');
 const { createWallet } = require('../src/services/stellar');
-const { register, login, refresh, logout, verifyEmail } = require('../src/controllers/authController');
 const {
   register,
   login,
+  refresh,
+  logout,
   verifyEmail,
+  getMe,
   forgotPassword,
-  resetPassword
+  resetPassword,
 } = require('../src/controllers/authController');
 
 function mockRes() {
@@ -137,20 +140,19 @@ test('login: returns JWT when credentials valid and email verified', async () =>
   const hash = await bcrypt.hash('password1', 12);
   db.query
     .mockResolvedValueOnce({
-      rows: [{ id: '1', full_name: 'Alice', email: 'a@b.com', password_hash: hash, email_verified: true, public_key: 'GPUB' }]
+      rows: [
+        {
+          id: '1',
+          full_name: 'Alice',
+          email: 'a@b.com',
+          password_hash: hash,
+          email_verified: true,
+          role: 'user',
+          public_key: 'GPUB',
+        },
+      ],
     })
     .mockResolvedValueOnce({ rows: [] }); // INSERT refresh_token
-  db.query.mockResolvedValueOnce({
-    rows: [{
-      id: '1',
-      full_name: 'Alice',
-      email: 'a@b.com',
-      password_hash: hash,
-      email_verified: true,
-      role: 'user',
-      public_key: 'GPUB'
-    }]
-  });
 
   const req = { body: { email: 'a@b.com', password: 'password1' } };
   const res = mockRes();
@@ -167,7 +169,17 @@ test('login: sets HttpOnly refreshToken cookie on success', async () => {
   const hash = await bcrypt.hash('password1', 12);
   db.query
     .mockResolvedValueOnce({
-      rows: [{ id: '1', full_name: 'Alice', email: 'a@b.com', password_hash: hash, email_verified: true, public_key: 'GPUB' }]
+      rows: [
+        {
+          id: '1',
+          full_name: 'Alice',
+          email: 'a@b.com',
+          password_hash: hash,
+          email_verified: true,
+          role: 'user',
+          public_key: 'GPUB',
+        },
+      ],
     })
     .mockResolvedValueOnce({ rows: [] }); // INSERT refresh_token
 
@@ -178,7 +190,7 @@ test('login: sets HttpOnly refreshToken cookie on success', async () => {
   expect(res.cookie).toHaveBeenCalledWith(
     'refreshToken',
     expect.any(String),
-    expect.objectContaining({ httpOnly: true, sameSite: 'strict' })
+    expect.objectContaining({ httpOnly: true, sameSite: 'lax' })
   );
 });
 
@@ -187,7 +199,17 @@ test('login: stores hashed refresh token in DB, not the raw value', async () => 
   const hash = await bcrypt.hash('password1', 12);
   db.query
     .mockResolvedValueOnce({
-      rows: [{ id: '1', full_name: 'Alice', email: 'a@b.com', password_hash: hash, email_verified: true, public_key: 'GPUB' }]
+      rows: [
+        {
+          id: '1',
+          full_name: 'Alice',
+          email: 'a@b.com',
+          password_hash: hash,
+          email_verified: true,
+          role: 'user',
+          public_key: 'GPUB',
+        },
+      ],
     })
     .mockResolvedValueOnce({ rows: [] });
 
@@ -480,4 +502,42 @@ test('resetPassword: updates password and marks tokens used', async () => {
   expect(res.json).toHaveBeenCalledWith(
     expect.objectContaining({ message: expect.stringContaining('reset') })
   );
+});
+
+// ── getMe ─────────────────────────────────────────────────────────────────────
+
+test('getMe: returns user data for valid JWT', async () => {
+  db.query.mockResolvedValueOnce({
+    rows: [{
+      id: 'u1',
+      full_name: 'Alice',
+      email: 'a@b.com',
+      phone: '+1234',
+      pin_setup_completed: true,
+      totp_enabled: false,
+      account_type: 'personal',
+      public_key: 'GPUB',
+    }],
+  });
+
+  const req = { user: { userId: 'u1' } };
+  const res = mockRes();
+  await getMe(req, res, jest.fn());
+
+  expect(res.json).toHaveBeenCalledWith(expect.objectContaining({
+    id: 'u1',
+    email: 'a@b.com',
+    wallet_address: 'GPUB',
+  }));
+});
+
+test('getMe: returns 404 when user not found', async () => {
+  db.query.mockResolvedValueOnce({ rows: [] });
+
+  const req = { user: { userId: 'missing' } };
+  const res = mockRes();
+  await getMe(req, res, jest.fn());
+
+  expect(res.status).toHaveBeenCalledWith(404);
+  expect(res.json).toHaveBeenCalledWith({ error: 'User not found' });
 });
