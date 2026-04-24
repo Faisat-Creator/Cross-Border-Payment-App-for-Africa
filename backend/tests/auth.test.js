@@ -92,6 +92,65 @@ test('register: does NOT return a JWT token', async () => {
 test('login: returns 401 for wrong password', async () => {
   const bcrypt = require('bcryptjs');
   const hash = await bcrypt.hash('correctpass', 12);
+  db.query
+    .mockResolvedValueOnce({
+      rows: [{
+        id: '1',
+        full_name: 'Alice',
+        email: 'a@b.com',
+        password_hash: hash,
+        email_verified: true,
+        role: 'user',
+        totp_enabled: false,
+        failed_login_attempts: 0,
+        locked_until: null,
+        public_key: 'GPUB'
+      }]
+    })
+    .mockResolvedValueOnce({ rows: [] });
+
+  const req = { body: { email: 'a@b.com', password: 'wrongpass' } };
+  const res = mockRes();
+  await login(req, res, jest.fn());
+
+  expect(res.status).toHaveBeenCalledWith(401);
+  expect(res.json).toHaveBeenCalledWith({ error: 'Invalid email or password' });
+});
+
+test('login: locks account after 10 consecutive failed attempts', async () => {
+  const bcrypt = require('bcryptjs');
+  const hash = await bcrypt.hash('correctpass', 12);
+  db.query
+    .mockResolvedValueOnce({
+      rows: [{
+        id: '1',
+        full_name: 'Alice',
+        email: 'a@b.com',
+        password_hash: hash,
+        email_verified: true,
+        role: 'user',
+        totp_enabled: false,
+        failed_login_attempts: 9,
+        locked_until: null,
+        public_key: 'GPUB'
+      }]
+    })
+    .mockResolvedValueOnce({ rows: [] });
+
+  const req = { body: { email: 'a@b.com', password: 'wrongpass' } };
+  const res = mockRes();
+  await login(req, res, jest.fn());
+
+  expect(res.status).toHaveBeenCalledWith(423);
+  expect(res.json).toHaveBeenCalledWith({
+    error: expect.stringMatching(/^Account locked until .*Z$/),
+  });
+});
+
+test('login: returns 423 when account is locked', async () => {
+  const future = new Date(Date.now() + 15 * 60 * 1000).toISOString();
+  const bcrypt = require('bcryptjs');
+  const hash = await bcrypt.hash('correctpass', 12);
   db.query.mockResolvedValueOnce({
     rows: [{
       id: '1',
@@ -100,16 +159,53 @@ test('login: returns 401 for wrong password', async () => {
       password_hash: hash,
       email_verified: true,
       role: 'user',
+      totp_enabled: false,
+      failed_login_attempts: 10,
+      locked_until: future,
       public_key: 'GPUB'
     }]
   });
 
-  const req = { body: { email: 'a@b.com', password: 'wrongpass' } };
+  const req = { body: { email: 'a@b.com', password: 'correctpass' } };
   const res = mockRes();
   await login(req, res, jest.fn());
 
-  expect(res.status).toHaveBeenCalledWith(401);
-  expect(res.json).toHaveBeenCalledWith({ error: 'Invalid email or password' });
+  expect(res.status).toHaveBeenCalledWith(423);
+  expect(res.json).toHaveBeenCalledWith({ error: `Account locked until ${future}` });
+  expect(db.query).toHaveBeenCalledTimes(1);
+});
+
+test('login: resets failed login counter on successful login', async () => {
+  const bcrypt = require('bcryptjs');
+  const hash = await bcrypt.hash('password1', 12);
+  db.query
+    .mockResolvedValueOnce({
+      rows: [
+        {
+          id: '1',
+          full_name: 'Alice',
+          email: 'a@b.com',
+          password_hash: hash,
+          email_verified: true,
+          role: 'user',
+          totp_enabled: false,
+          failed_login_attempts: 3,
+          locked_until: null,
+          public_key: 'GPUB',
+        },
+      ],
+    })
+    .mockResolvedValueOnce({ rows: [] })
+    .mockResolvedValueOnce({ rows: [] });
+
+  const req = { body: { email: 'a@b.com', password: 'password1' } };
+  const res = mockRes();
+  await login(req, res, jest.fn());
+
+  expect(db.query.mock.calls[1][0]).toContain('UPDATE users SET failed_login_attempts = 0, locked_until = NULL');
+  expect(res.status).not.toHaveBeenCalledWith(401);
+  expect(res.status).not.toHaveBeenCalledWith(403);
+  expect(res.json.mock.calls[0][0].token).toBeDefined();
 });
 
 test('login: returns 403 when email not verified', async () => {
@@ -152,7 +248,8 @@ test('login: returns JWT when credentials valid and email verified', async () =>
         },
       ],
     })
-    .mockResolvedValueOnce({ rows: [] }); // INSERT refresh_token
+    .mockResolvedValueOnce({ rows: [] })
+    .mockResolvedValueOnce({ rows: [] }); // account reset + INSERT refresh_token
 
   const req = { body: { email: 'a@b.com', password: 'password1' } };
   const res = mockRes();

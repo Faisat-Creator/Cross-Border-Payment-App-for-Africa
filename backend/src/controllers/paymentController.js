@@ -7,6 +7,9 @@ const cache = require("../utils/cache");
 const { checkFraud, logFraudBlock } = require("../services/fraudDetection");
 const { parseHistoryFrom, parseHistoryTo, normalizeAsset } = require("../utils/historyQuery");
 const { isMemoRequired } = require("../services/memoRequired");
+const { awardReferralCredit } = require("./referralController");
+const { mintPoints } = require("../services/loyaltyToken");
+const { depositFee } = require("../services/feeDistributor");
 
 // Configurable KYC transaction threshold in USD equivalent
 const KYC_THRESHOLD_USD = parseFloat(process.env.KYC_THRESHOLD_USD || "100");
@@ -16,6 +19,9 @@ const XLM_USD_RATE = parseFloat(process.env.XLM_USD_RATE || "0.11");
 
 // Daily send limit per user
 const DAILY_SEND_LIMIT = parseFloat(process.env.DAILY_SEND_LIMIT || "50000");
+
+// Threshold for phone verification check
+const PHONE_VERIFICATION_THRESHOLD_USD = parseFloat(process.env.PHONE_VERIFICATION_THRESHOLD_USD || "100");
 
 function estimateUSDValue(amount, asset) {
   if (asset === "USD" || asset === "USDC") return parseFloat(amount);
@@ -73,10 +79,22 @@ async function send(req, res, next) {
     const estimatedUSD = estimateUSDValue(amount, asset);
     if (estimatedUSD >= KYC_THRESHOLD_USD) {
       const kycResult = await db.query("SELECT kyc_status FROM users WHERE id = $1", [
+    // Phone verification check for high-value transactions
+    if (estimatedUSD >= PHONE_VERIFICATION_THRESHOLD_USD) {
+      const userResult = await db.query("SELECT kyc_status, phone_verified FROM users WHERE id = $1", [
         req.user.userId,
       ]);
-      const kycStatus = kycResult.rows[0]?.kyc_status || "unverified";
-      if (kycStatus !== "verified") {
+      const { kyc_status: kycStatus, phone_verified: phoneVerified } = userResult.rows[0] || {};
+      
+      if (!phoneVerified) {
+        return res.status(403).json({
+          error: "Phone verification required for transactions above $" + PHONE_VERIFICATION_THRESHOLD_USD + " USD equivalent.",
+          phone_verified: false,
+          code: "PHONE_VERIFICATION_REQUIRED",
+        });
+      }
+
+      if (kycStatus !== "verified" && estimatedUSD >= KYC_THRESHOLD_USD) {
         return res.status(403).json({
           error:
             "KYC verification required for transactions above $" +
@@ -149,11 +167,63 @@ async function send(req, res, next) {
     // Invalidate sender's cached balance — it changed after this payment
     await cache.del(`balance:${public_key}`);
 
+    // Award referral credit to referrer if this is the sender's first transaction
+    const txCount = await db.query(
+      `SELECT COUNT(*) AS cnt FROM transactions WHERE sender_wallet = $1`,
+      [public_key]
+    );
+    if (parseInt(txCount.rows[0].cnt, 10) === 1) {
+      awardReferralCredit(req.user.userId).catch(() => {});
+    // Mint loyalty points: 1 point per 1 XLM (or XLM-equivalent) of volume
+    const loyaltyPoints = Math.max(1, Math.floor(parseFloat(amount)));
+    mintPoints({ recipientWallet: public_key, points: loyaltyPoints }).catch(() => {});
+    // Deposit platform fee on-chain (fire-and-forget — never blocks the response)
+    const FEE_BPS = parseInt(process.env.PLATFORM_FEE_BPS || "250", 10);
+    if (asset === "USDC" && FEE_BPS > 0) {
+      const feeStroops = Math.floor(parseFloat(amount) * 1e7 * FEE_BPS / 10000);
+      if (feeStroops > 0) {
+        depositFee(feeStroops).catch((err) =>
+          console.error("Fee deposit failed (non-critical):", err.message)
+        );
+      }
+    }
+
     const txData = { id: txId, tx_hash: transactionHash, ledger, amount, asset, sender: public_key, recipient: recipient_address, type };
     webhook.deliver("payment.sent", txData).catch(() => {});
     if (type !== "claimable_balance") {
       webhook.deliver("payment.received", txData).catch(() => {});
     }
+
+    // Fire transaction receipt emails asynchronously — do not block the response
+    const emailTxData = {
+      amount,
+      asset,
+      senderAddress: public_key,
+      recipientAddress: recipient_address,
+      memo: memo || null,
+      txHash: transactionHash,
+    };
+
+    // Email the sender
+    db.query('SELECT email FROM users WHERE id = $1', [req.user.userId])
+      .then(({ rows }) => {
+        if (rows[0]?.email) {
+          return sendTransactionEmail(rows[0].email, 'sent', emailTxData);
+        }
+      })
+      .catch((err) => logger.warn('Failed to send payment-sent email', { error: err.message }));
+
+    // Email the recipient if they are a registered AfriPay user
+    db.query(
+      'SELECT u.email FROM users u JOIN wallets w ON w.user_id = u.id WHERE w.public_key = $1',
+      [recipient_address]
+    )
+      .then(({ rows }) => {
+        if (rows[0]?.email) {
+          return sendTransactionEmail(rows[0].email, 'received', emailTxData);
+        }
+      })
+      .catch((err) => logger.warn('Failed to send payment-received email', { error: err.message }));
 
     res.json({
       message: type === "claimable_balance" ? "Claimable balance created" : "Payment sent successfully",
@@ -321,6 +391,20 @@ async function sendPath(req, res, next) {
       const kycResult = await db.query("SELECT kyc_status FROM users WHERE id = $1", [req.user.userId]);
       const kycStatus = kycResult.rows[0]?.kyc_status || "unverified";
       if (kycStatus !== "verified") {
+    // Phone verification check
+    if (estimatedUSD >= PHONE_VERIFICATION_THRESHOLD_USD) {
+      const userResult = await db.query("SELECT kyc_status, phone_verified FROM users WHERE id = $1", [req.user.userId]);
+      const { kyc_status: kycStatus, phone_verified: phoneVerified } = userResult.rows[0] || {};
+      
+      if (!phoneVerified) {
+        return res.status(403).json({
+          error: `Phone verification required for transactions above $${PHONE_VERIFICATION_THRESHOLD_USD} USD equivalent.`,
+          phone_verified: false,
+          code: "PHONE_VERIFICATION_REQUIRED",
+        });
+      }
+
+      if (kycStatus !== "verified" && estimatedUSD >= KYC_THRESHOLD_USD) {
         return res.status(403).json({
           error: `KYC verification required for transactions above $${KYC_THRESHOLD_USD} USD equivalent.`,
           kyc_status: kycStatus,

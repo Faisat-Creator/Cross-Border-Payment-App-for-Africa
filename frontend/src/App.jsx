@@ -10,8 +10,7 @@ import Register from "./pages/Register";
 import ForgotPassword from "./pages/ForgotPassword";
 import ResetPassword from "./pages/ResetPassword";
 import Dashboard from "./pages/Dashboard";
-import SendMoney from "./pages/SendMoney";
-import ReceiveMoney from "./pages/ReceiveMoney";
+import SaveMoney from "./pages/SaveMoney";
 import RequestMoney from "./pages/RequestMoney";
 import ScheduledPayments from "./pages/ScheduledPayments";
 import TransactionHistory from "./pages/TransactionHistory";
@@ -20,6 +19,7 @@ import Analytics from "./pages/Analytics";
 import KYCVerification from "./pages/KYCVerification";
 import BusinessSettings from "./pages/BusinessSettings";
 import Swap from "./pages/Swap";
+import Referrals from "./pages/Referrals";
 import Layout from "./components/Layout";
 import ErrorBoundary from "./components/ErrorBoundary";
 
@@ -106,8 +106,7 @@ export default function App() {
                 }
               >
                 <Route path="dashboard" element={<Dashboard />} />
-                <Route path="send" element={<SendMoney />} />
-                <Route path="receive" element={<ReceiveMoney />} />
+                <Route path="save" element={<SaveMoney />} />
                 <Route path="request" element={<RequestMoney />} />
                 <Route path="scheduled" element={<ScheduledPayments />} />
                 <Route path="history" element={<TransactionHistory />} />
@@ -117,6 +116,7 @@ export default function App() {
                 <Route path="webhooks" element={<Webhooks />} />
                 <Route path="business" element={<BusinessSettings />} />
                 <Route path="swap" element={<Swap />} />
+                <Route path="referrals" element={<Referrals />} />
               </Route>
             </Routes>
           </BrowserRouter>

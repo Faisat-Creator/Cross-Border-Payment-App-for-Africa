@@ -1,12 +1,15 @@
 import React, { useEffect, useState, useCallback } from 'react';
 import { useNavigate } from 'react-router-dom';
-import { Send, Download, RefreshCw, Copy, CheckCheck, FlaskConical, Plus, Minus } from 'lucide-react';
+import { Send, Download, RefreshCw, Copy, CheckCheck, FlaskConical, Plus, Minus, PiggyBank } from 'lucide-react';
+import { Send, Download, RefreshCw, Copy, CheckCheck, FlaskConical, Plus, Minus, WifiOff } from 'lucide-react';
 import { useAuth } from '../context/AuthContext';
 import { BalanceCardSkeleton, TransactionRowSkeleton } from '../components/Skeleton';
 import api from '../utils/api';
 import { truncateAddress } from '../utils/currency';
 import { useExchangeRates } from '../hooks/useExchangeRates';
 import { usePaymentStream } from '../hooks/usePaymentStream';
+import { useOnlineStatus } from '../hooks/useOnlineStatus';
+import { setCacheEntry, getCacheEntry } from '../utils/offlineDB';
 import toast from 'react-hot-toast';
 import { useTranslation } from 'react-i18next';
 
@@ -23,7 +26,9 @@ export default function Dashboard() {
   const [selectedCurrency, setSelectedCurrency] = useState('XLM');
   const [funding, setFunding] = useState(false);
   const [balanceIncreased, setBalanceIncreased] = useState(false);
+  const [fromCache, setFromCache] = useState(false);
   const { currencies, convertFromXLM, usingApproximateRates } = useExchangeRates();
+  const { isOnline } = useOnlineStatus();
 
   // Handle incoming payment from stream
   const handlePayment = useCallback((payment) => {
@@ -51,14 +56,73 @@ export default function Dashboard() {
   const { isConnected, error: streamError } = usePaymentStream(wallet?.public_key, handlePayment);
 
   useEffect(() => {
-    Promise.all([
-      api.get('/wallet/balance'),
-      api.get('/payments/history')
-    ]).then(([walletRes, txRes]) => {
-      setWallet(walletRes.data);
-      setTransactions(txRes.data.transactions.slice(0, 5));
-    }).catch(() => toast.error('Failed to load wallet data'))
-      .finally(() => setLoading(false));
+    async function loadDashboard() {
+      // If offline, try to serve from IndexedDB cache immediately
+      if (!navigator.onLine) {
+        try {
+          const [cachedWallet, cachedHistory] = await Promise.all([
+            getCacheEntry('balance'),
+            getCacheEntry('history'),
+          ]);
+          if (cachedWallet?.data) {
+            setWallet(cachedWallet.data);
+            setFromCache(true);
+          }
+          if (cachedHistory?.data) {
+            setTransactions(cachedHistory.data.slice(0, 5));
+          }
+        } catch {
+          // IndexedDB unavailable — nothing to show
+        } finally {
+          setLoading(false);
+        }
+        return;
+      }
+
+      // Online — fetch fresh data and persist to cache
+      try {
+        const [walletRes, txRes] = await Promise.all([
+          api.get('/wallet/balance'),
+          api.get('/payments/history'),
+        ]);
+        const walletData = walletRes.data;
+        const txData     = txRes.data.transactions;
+
+        setWallet(walletData);
+        setTransactions(txData.slice(0, 5));
+        setFromCache(false);
+
+        // Persist to IndexedDB for offline use
+        await Promise.all([
+          setCacheEntry('balance', walletData),
+          setCacheEntry('history', txData),
+        ]);
+      } catch {
+        // Network failed — fall back to cache
+        try {
+          const [cachedWallet, cachedHistory] = await Promise.all([
+            getCacheEntry('balance'),
+            getCacheEntry('history'),
+          ]);
+          if (cachedWallet?.data) {
+            setWallet(cachedWallet.data);
+            setFromCache(true);
+          }
+          if (cachedHistory?.data) {
+            setTransactions(cachedHistory.data.slice(0, 5));
+          }
+          if (!cachedWallet?.data) {
+            toast.error('Failed to load wallet data');
+          }
+        } catch {
+          toast.error('Failed to load wallet data');
+        }
+      } finally {
+        setLoading(false);
+      }
+    }
+
+    loadDashboard();
   }, []);
 
   const copyAddress = () => {
@@ -151,7 +215,15 @@ export default function Dashboard() {
 
       {/* Balance Card */}
       <div className={`bg-gradient-to-br from-primary-600 to-primary-700 rounded-2xl p-5 shadow-lg shadow-primary-500/20 transition-all duration-500 ${balanceIncreased ? 'ring-4 ring-green-400 ring-opacity-50' : ''}`}>
-        <p className="text-primary-100 text-sm mb-1">{t('dashboard.total_balance')}</p>
+        <div className="flex items-center justify-between mb-1">
+          <p className="text-primary-100 text-sm">{t('dashboard.total_balance')}</p>
+          {fromCache && (
+            <span className="flex items-center gap-1 text-primary-200 text-xs bg-primary-800/40 rounded-full px-2 py-0.5">
+              <WifiOff size={10} aria-hidden="true" />
+              Cached
+            </span>
+          )}
+        </div>
         <div className="flex items-end gap-2 mb-4">
           <span className="text-4xl font-bold text-white">{parseFloat(displayBalance).toLocaleString()}</span>
           <span className="text-primary-200 mb-1">{selectedCurrency}</span>
@@ -202,13 +274,13 @@ export default function Dashboard() {
           <span className="font-semibold text-gray-900 dark:text-white">{t('dashboard.send')}</span>
         </button>
         <button
-          onClick={() => navigate('/receive')}
+          onClick={() => navigate('/save')}
           className="bg-white dark:bg-gray-800 hover:bg-gray-50 dark:hover:bg-gray-700 border border-gray-100 dark:border-gray-700 rounded-xl p-4 flex items-center gap-3 shadow-sm transition-all"
         >
-          <div className="w-10 h-10 bg-primary-500/10 rounded-lg flex items-center justify-center text-primary-500">
-            <Download size={20} />
+          <div className="w-10 h-10 bg-green-500/10 rounded-lg flex items-center justify-center text-green-500">
+            <PiggyBank size={20} />
           </div>
-          <span className="font-semibold text-gray-900 dark:text-white">{t('dashboard.receive')}</span>
+          <span className="font-semibold text-gray-900 dark:text-white">Save</span>
         </button>
       </div>
 

@@ -1,5 +1,5 @@
 import React, { useState } from 'react';
-import { useNavigate, Link } from 'react-router-dom';
+import { useNavigate, Link, useSearchParams } from 'react-router-dom';
 import { useAuth } from '../context/AuthContext';
 import toast from 'react-hot-toast';
 import { Eye, EyeOff, ArrowLeft, ChevronDown, ChevronUp } from 'lucide-react';
@@ -7,6 +7,7 @@ import { useTranslation } from 'react-i18next';
 export default function Register() {
   const { register } = useAuth();
   const navigate = useNavigate();
+  const [searchParams] = useSearchParams();
   const { t } = useTranslation();
   const [form, setForm] = useState({ full_name: '', email: '', password: '', phone: '' });
   const [showPass, setShowPass] = useState(false);
@@ -21,6 +22,8 @@ export default function Register() {
     try {
       const payload = { ...form };
       if (showImport && secretKey) payload.secret_key = secretKey;
+      const refCode = searchParams.get('ref');
+      if (refCode) payload.referral_code = refCode;
       await register(payload);
       toast.success(t('register.success'));
       setShowPINSetup(true);

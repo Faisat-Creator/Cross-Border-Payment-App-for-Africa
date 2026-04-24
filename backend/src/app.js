@@ -5,6 +5,8 @@ const rateLimit = require('express-rate-limit');
 const cookieParser = require('cookie-parser');
 
 const requestId = require('./middleware/requestId');
+const metricsMiddleware = require('./middleware/metricsMiddleware');
+const { registry } = require('./utils/metrics');
 
 const authRoutes = require('./routes/auth');
 const walletRoutes = require('./routes/wallet');
@@ -24,6 +26,9 @@ const analyticsRoutes = require('./routes/analytics');
 const dexRoutes = require('./routes/dex');
 const supportRoutes = require('./routes/support');
 const agentEscrowRoutes = require('./routes/agentEscrow');
+const referralRoutes = require('./routes/referrals');
+const loyaltyRoutes = require('./routes/loyalty');
+const disputeRoutes = require('./routes/disputes');
 
 const swaggerJsdoc = require('swagger-jsdoc');
 const swaggerUi = require('swagger-ui-express');
@@ -38,6 +43,7 @@ app.use((req, res, next) => {
   req.logger = logger.child({ requestId: req.requestId });
   next();
 });
+app.use(metricsMiddleware);
 app.use(cookieParser());
 app.use(helmet({
   contentSecurityPolicy: {
@@ -53,7 +59,7 @@ app.use(helmet({
     },
   },
 }));
-app.use(cors({ origin: process.env.FRONTEND_URL, credentials: true }));
+app.use(cors({ origin: process.env.FRONTEND_URL, credentials: true, maxAge: 86400 }));
 app.use(express.json());
 
 const limiter = rateLimit({
@@ -80,6 +86,9 @@ app.use('/api/analytics', analyticsRoutes);
 app.use('/api/dex', dexRoutes);
 app.use('/api/support', supportRoutes);
 app.use('/api/escrow', agentEscrowRoutes);
+app.use('/api/referrals', referralRoutes);
+app.use('/api/loyalty', loyaltyRoutes);
+app.use('/api/disputes', disputeRoutes);
 app.use('/api/kyc', kycRoutes);
 app.use('/api/admin', adminRoutes);
 app.use('/api/webhooks', webhookRoutes);
@@ -157,6 +166,18 @@ app.get('/health', async (req, res) => {
       network: process.env.STELLAR_NETWORK || 'testnet',
     });
   }
+});
+
+app.get('/metrics', async (req, res) => {
+  const token = process.env.METRICS_TOKEN;
+  if (token) {
+    const auth = req.headers.authorization || '';
+    if (auth !== `Bearer ${token}`) {
+      return res.status(401).end();
+    }
+  }
+  res.set('Content-Type', registry.contentType);
+  res.end(await registry.metrics());
 });
 
 app.use((err, req, res, next) => {

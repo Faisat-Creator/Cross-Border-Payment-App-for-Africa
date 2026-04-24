@@ -5,6 +5,7 @@ import { useAuth } from '../context/AuthContext';
 import { useTheme } from '../context/ThemeContext';
 import { usePushNotifications } from '../hooks/usePushNotifications';
 import { useStellarStatus } from '../hooks/useStellarStatus';
+import OfflineBanner from './OfflineBanner';
 
 const navItems = [
   { to: '/dashboard', icon: LayoutDashboard, label: 'Dashboard' },
@@ -33,6 +34,8 @@ export default function Layout() {
           ⚠️ TESTNET — Do not use real funds
         </div>
       )}
+      {/* Offline / back-online banner */}
+      <OfflineBanner />
       {/* Stellar Network Status Banner */}
       {isDegraded && (
         <div className="bg-yellow-500 text-yellow-900 text-center text-xs font-semibold py-2 px-4 flex items-center justify-center gap-2">

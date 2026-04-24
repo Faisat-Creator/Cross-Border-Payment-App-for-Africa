@@ -1,6 +1,6 @@
 import React, { useState } from 'react';
-import { useNavigate } from 'react-router-dom';
-import { LogOut, User, Mail, Phone, Wallet, Copy, CheckCheck, Plus, Globe, Trash2, ShieldAlert, Eye, EyeOff, Activity, AlertTriangle, Building2, Coins } from 'lucide-react';
+import { useNavigate, Link } from 'react-router-dom';
+import { LogOut, User, Mail, Phone, Wallet, Copy, CheckCheck, Plus, Globe, Trash2, ShieldAlert, Eye, EyeOff, Activity, AlertTriangle, Building2, Coins, Gift } from 'lucide-react';
 import { useAuth } from '../context/AuthContext';
 import { truncateAddress } from '../utils/currency';
 import api from '../utils/api';
@@ -241,6 +241,21 @@ export default function Profile() {
           ))}
         </div>
       </div>
+
+      {/* Referral Program */}
+      <Link
+        to="/referrals"
+        className="bg-gray-900 rounded-2xl p-5 flex items-center justify-between hover:bg-gray-800 transition-colors"
+      >
+        <div className="flex items-center gap-3">
+          <Gift size={20} className="text-primary-500" />
+          <div>
+            <p className="font-semibold text-white text-sm">Refer &amp; Earn</p>
+            <p className="text-xs text-gray-400">Invite friends, earn fee credits</p>
+          </div>
+        </div>
+        <span className="text-gray-500 text-lg">›</span>
+      </Link>
 
       {/* Contacts */}
       <div className="bg-gray-900 rounded-2xl p-5">
