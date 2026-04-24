@@ -12,6 +12,10 @@ const {
   getTrustlines,
   mergeAccount,
   createWallet: generateWallet,
+  setDataEntry,
+  getDataEntries,
+  getAccountFlags,
+  setAccountFlags,
 } = require('../services/stellar');
 const { getBalance, getTransactions, decryptPrivateKey, addAccountSigner, removeAccountSigner, addTrustline, removeTrustline, getTrustlines, mergeAccount, setDataEntry, getDataEntries } = require('../services/stellar');
 const QRCode = require('qrcode');
@@ -406,6 +410,21 @@ async function deleteEntry(req, res, next) {
   }
 }
 
+/**
+ * GET /api/wallet/flags
+ * Returns the current Stellar authorization flags for the user's wallet.
+ */
+async function getWalletFlags(req, res, next) {
+  try {
+    const wallet = await resolveWallet(req.user.userId, req.query.wallet_id || null);
+    if (!wallet) return res.status(404).json({ error: 'Wallet not found' });
+    const flags = await getAccountFlags(wallet.public_key);
+    res.json({ public_key: wallet.public_key, flags });
+  } catch (err) {
+    next(err);
+  }
+}
+
 module.exports = { getWallet, getQRCode, getWalletTransactions, exportKey, upgradeToBusinessAccount, addSigner, removeSigner, listSigners, listTrustlines, addTrustlineHandler, removeTrustlineHandler, mergeWallet, listDataEntries, setEntry, deleteEntry, ALLOWED_KEYS };
 
 async function mergeWallet(req, res, next) {
@@ -469,4 +488,8 @@ module.exports = {
   addTrustlineHandler,
   removeTrustlineHandler,
   mergeWallet,
+  listDataEntries,
+  setEntry,
+  deleteEntry,
+  getWalletFlags,
 };
