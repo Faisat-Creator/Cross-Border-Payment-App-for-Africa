@@ -1,9 +1,11 @@
 import React, { useEffect, useState, useMemo, useCallback } from 'react';
 import { useNavigate } from 'react-router-dom';
-import { ArrowLeft, Send, Download, ExternalLink, Filter, Search, Flag, X } from 'lucide-react';
+import { ArrowLeft, Send, Download, ExternalLink, Filter, Search, Flag, X, WifiOff } from 'lucide-react';
 import api from '../utils/api';
 import { truncateAddress } from '../utils/currency';
 import { TransactionCardSkeleton } from '../components/Skeleton';
+import { useOnlineStatus } from '../hooks/useOnlineStatus';
+import { setCacheEntry, getCacheEntry } from '../utils/offlineDB';
 import { useTranslation } from 'react-i18next';
 
 const STATUS_COLORS = {
@@ -25,6 +27,7 @@ function buildHistoryParams(pageNum, dateFrom, dateTo, asset) {
 export default function TransactionHistory() {
   const navigate = useNavigate();
   const { t } = useTranslation();
+  const { isOnline } = useOnlineStatus();
   const [transactions, setTransactions] = useState([]);
   const [loading, setLoading] = useState(true);
   const [loadingMore, setLoadingMore] = useState(false);
@@ -32,6 +35,7 @@ export default function TransactionHistory() {
   const [page, setPage] = useState(1);
   const [hasMore, setHasMore] = useState(false);
   const [error, setError] = useState(null);
+  const [fromCache, setFromCache] = useState(false);
   const [exporting, setExporting] = useState(false);
   const [search, setSearch] = useState('');
   const [dateFrom, setDateFrom] = useState('');
@@ -46,16 +50,60 @@ export default function TransactionHistory() {
     setLoading(true);
     setError(null);
     setPage(1);
+
+    // Offline — serve from IndexedDB cache
+    if (!navigator.onLine) {
+      try {
+        const cached = await getCacheEntry('history');
+        if (cached?.data) {
+          setTransactions(cached.data);
+          setFromCache(true);
+          setHasMore(false);
+        } else {
+          setError(t('history.load_error'));
+          setTransactions([]);
+        }
+      } catch {
+        setError(t('history.load_error'));
+        setTransactions([]);
+      } finally {
+        setLoading(false);
+      }
+      return;
+    }
+
+    // Online — fetch fresh and persist
     try {
       const params = buildHistoryParams(1, dateFrom, dateTo, asset);
       const r = await api.get('/payments/history', { params });
-      setTransactions(r.data.transactions);
+      const txList = r.data.transactions;
+      setTransactions(txList);
       setHasMore(r.data.page < r.data.pages);
       setPage(1);
+      setFromCache(false);
+
+      // Only cache the unfiltered first page (no date/asset filters)
+      if (!dateFrom && !dateTo && !asset) {
+        await setCacheEntry('history', txList);
+      }
     } catch {
-      setError(t('history.load_error'));
-      setTransactions([]);
-      setHasMore(false);
+      // Network failed — try cache
+      try {
+        const cached = await getCacheEntry('history');
+        if (cached?.data) {
+          setTransactions(cached.data);
+          setFromCache(true);
+          setHasMore(false);
+        } else {
+          setError(t('history.load_error'));
+          setTransactions([]);
+          setHasMore(false);
+        }
+      } catch {
+        setError(t('history.load_error'));
+        setTransactions([]);
+        setHasMore(false);
+      }
     } finally {
       setLoading(false);
     }
@@ -157,7 +205,15 @@ export default function TransactionHistory() {
       </button>
 
       <div className="flex items-center justify-between mb-4">
-        <h2 className="text-2xl font-bold text-white">{t('history.title')}</h2>
+        <h2 className="text-2xl font-bold text-white">
+          {t('history.title')}
+          {fromCache && (
+            <span className="ml-2 inline-flex items-center gap-1 text-xs font-normal text-gray-400 bg-gray-800 rounded-full px-2 py-0.5 align-middle">
+              <WifiOff size={10} aria-hidden="true" />
+              Cached
+            </span>
+          )}
+        </h2>
         <div className="flex items-center gap-2">
           <button
             type="button"

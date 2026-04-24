@@ -201,8 +201,9 @@ export default function SendMoney() {
   const handlePINVerified = async () => {
     setLoading(true);
     try {
+      let res;
       if (isCrossAsset && pathResult) {
-        await api.post('/payments/send-path', {
+        res = await api.post('/payments/send-path', {
           recipient_address: form.recipient_address,
           source_asset: form.asset,
           source_amount: parseFloat(form.amount),
@@ -212,40 +213,41 @@ export default function SendMoney() {
           memo: form.memo || undefined,
         });
       } else {
-        await api.post('/payments/send', {
-          recipient_address: form.recipient_address,
+        const m = form.memo.trim();
+        let recipientAddress = form.recipient_address;
+
+        // Resolve federation address if needed
+        if (recipientAddress.includes('*')) {
+          const fedRes = await api.get('/payments/resolve-federation', { params: { address: recipientAddress } });
+          recipientAddress = fedRes.data.public_key;
+        }
+
+        const payload = {
+          recipient_address: recipientAddress,
           amount: parseFloat(form.amount),
           asset: form.asset,
-          memo: form.memo || undefined,
-        });
+        };
+        if (m) {
+          payload.memo = m;
+          payload.memo_type = form.memo_type;
+        }
+        res = await api.post('/payments/send', payload);
       }
-      const m = form.memo.trim();
-      let recipientAddress = form.recipient_address;
-      
-      // Resolve federation address if needed
-      if (recipientAddress.includes('*')) {
-        const res = await api.get('/payments/resolve-federation', { params: { address: recipientAddress } });
-        recipientAddress = res.data.public_key;
+
+      // Offline queue — the api interceptor returns { queued: true }
+      if (res.data?.queued) {
+        toast.success('You\'re offline. Payment queued — it will send automatically when you reconnect.', { duration: 5000 });
+        navigate('/dashboard');
+        return;
       }
-      
-      const payload = {
-        recipient_address: recipientAddress,
-        amount: parseFloat(form.amount),
-        asset: form.asset
-      };
-      if (m) {
-        payload.memo = m;
-        payload.memo_type = form.memo_type;
-      }
-      const res = await api.post('/payments/send', payload);
-      
+
       // Mark payment request as claimed if applicable
       if (requestId) {
         await api.post(`/payment-requests/${requestId}/claim`, {
-          txHash: res.data.transaction.tx_hash
+          txHash: res.data?.transaction?.tx_hash,
         }).catch(() => {});
       }
-      
+
       toast.success(t('send.success'));
       navigate('/dashboard');
     } catch (err) {

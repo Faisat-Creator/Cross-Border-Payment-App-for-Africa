@@ -1,4 +1,5 @@
 import axios from 'axios';
+import { enqueuePayment } from './offlineDB';
 
 const baseURL = process.env.REACT_APP_API_URL || 'http://localhost:5000/api';
 
@@ -53,9 +54,49 @@ api.interceptors.request.use((config) => {
   return config;
 });
 
+/**
+ * Offline payment interceptor
+ *
+ * When the device has no network and the request is POST /payments/send,
+ * we enqueue the payload in IndexedDB and resolve with a synthetic
+ * { queued: true } response so the UI can show a "queued" confirmation
+ * instead of a hard error.
+ *
+ * The service worker's Background Sync handler will replay the request
+ * automatically once connectivity is restored.
+ */
+api.interceptors.request.use(async (config) => {
+  const isPaymentSend =
+    config.method?.toLowerCase() === 'post' &&
+    (config.url?.includes('/payments/send'));
+
+  if (isPaymentSend && !navigator.onLine) {
+    await enqueuePayment(config.data ?? {});
+    // Throw a special sentinel so the response interceptor can surface it
+    const offlineErr = new Error('OFFLINE_QUEUED');
+    offlineErr.isOfflineQueued = true;
+    offlineErr.config = config;
+    throw offlineErr;
+  }
+
+  return config;
+});
+
 api.interceptors.response.use(
   (res) => res,
   async (err) => {
+    // Payment was queued offline — surface a clean resolved response
+    if (err.isOfflineQueued) {
+      return Promise.resolve({
+        data: {
+          queued: true,
+          message: 'You are offline. Your payment has been queued and will be sent automatically when your connection is restored.',
+        },
+        status: 202,
+        config: err.config,
+      });
+    }
+
     const originalRequest = err.config;
     if (!originalRequest || !shouldAttemptRefresh(err, originalRequest)) {
       if (err.response?.status === 401) {
