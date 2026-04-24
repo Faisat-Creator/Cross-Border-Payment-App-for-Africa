@@ -11,6 +11,8 @@ CREATE TABLE users (
   email_verified     BOOLEAN     NOT NULL DEFAULT FALSE,
   verification_token VARCHAR(64),
   token_expires_at   TIMESTAMPTZ,
+  failed_login_attempts INTEGER NOT NULL DEFAULT 0,
+  locked_until        TIMESTAMPTZ,
   created_at         TIMESTAMPTZ DEFAULT NOW(),
   updated_at         TIMESTAMPTZ DEFAULT NOW()
 );
