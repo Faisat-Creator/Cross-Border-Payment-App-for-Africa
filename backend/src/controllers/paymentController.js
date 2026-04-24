@@ -180,6 +180,37 @@ async function send(req, res, next) {
       webhook.deliver("payment.received", txData).catch(() => {});
     }
 
+    // Fire transaction receipt emails asynchronously — do not block the response
+    const emailTxData = {
+      amount,
+      asset,
+      senderAddress: public_key,
+      recipientAddress: recipient_address,
+      memo: memo || null,
+      txHash: transactionHash,
+    };
+
+    // Email the sender
+    db.query('SELECT email FROM users WHERE id = $1', [req.user.userId])
+      .then(({ rows }) => {
+        if (rows[0]?.email) {
+          return sendTransactionEmail(rows[0].email, 'sent', emailTxData);
+        }
+      })
+      .catch((err) => logger.warn('Failed to send payment-sent email', { error: err.message }));
+
+    // Email the recipient if they are a registered AfriPay user
+    db.query(
+      'SELECT u.email FROM users u JOIN wallets w ON w.user_id = u.id WHERE w.public_key = $1',
+      [recipient_address]
+    )
+      .then(({ rows }) => {
+        if (rows[0]?.email) {
+          return sendTransactionEmail(rows[0].email, 'received', emailTxData);
+        }
+      })
+      .catch((err) => logger.warn('Failed to send payment-received email', { error: err.message }));
+
     res.json({
       message: type === "claimable_balance" ? "Claimable balance created" : "Payment sent successfully",
       transaction: {
