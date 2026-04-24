@@ -1,4 +1,5 @@
 const { Pool } = require('pg');
+const { dbQueryDuration } = require('./utils/metrics');
 const logger = require('./utils/logger');
 
 const WAITING_ALERT_THRESHOLD = 5;
@@ -56,6 +57,19 @@ pool.on('error', (err) => {
   });
 });
 
+async function query(text, params) {
+  const end = dbQueryDuration.startTimer();
+  try {
+    const result = await pool.query(text, params);
+    end({ success: 'true' });
+    return result;
+  } catch (err) {
+    end({ success: 'false' });
+    throw err;
+  }
+}
+
+module.exports = { query, pool };
 /**
  * Returns a snapshot of the current pool health metrics.
  * @returns {{ total: number, idle: number, waiting: number }}
