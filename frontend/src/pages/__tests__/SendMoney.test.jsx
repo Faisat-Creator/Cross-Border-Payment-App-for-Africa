@@ -538,3 +538,66 @@ test('no error shown when field is empty on blur', async () => {
   fireEvent.blur(input);
   expect(screen.queryByText(/invalid address/i)).not.toBeInTheDocument();
 });
+
+// ── Issue #641: fee estimation preview ──────────────────────────────────────
+
+function mockFeeApi({ feeBps = 250, mode = 'ok', networkFee = { fee_xlm: '0.0000100' } } = {}) {
+  api.get.mockImplementation((url) => {
+    if (url === '/payments/fee-rate') {
+      if (mode === 'pending') return new Promise(() => {}); // never resolves
+      if (mode === 'reject') return Promise.reject(new Error('fee rate unavailable'));
+      return Promise.resolve({ data: { fee_bps: feeBps } });
+    }
+    if (url === '/payments/estimate-fee') return Promise.resolve({ data: networkFee });
+    if (url === '/wallet/list') return Promise.resolve({ data: { wallets: [] } });
+    if (url === '/payments/fee-stats') return Promise.resolve({ data: {} });
+    return Promise.resolve({ data: { contacts: [] } });
+  });
+}
+
+test('shows fee breakdown after the user types an amount', async () => {
+  mockFeeApi({ feeBps: 250 });
+  renderComponent();
+
+  await userEvent.type(screen.getByPlaceholderText('0.00'), '100');
+
+  const panel = await screen.findByTestId('fee-estimate');
+  await waitFor(() => expect(panel).toHaveTextContent('Platform fee (2.5%)'));
+  expect(panel).toHaveTextContent('2.5 XLM'); // 100 * 250bps
+  expect(panel).toHaveTextContent('0.0000100 XLM'); // network fee
+  expect(panel).toHaveTextContent('97.5 XLM'); // recipient receives
+});
+
+test('shows a loading skeleton while the estimate is fetched', async () => {
+  mockFeeApi({ mode: 'pending' });
+  renderComponent();
+
+  await userEvent.type(screen.getByPlaceholderText('0.00'), '50');
+
+  expect(await screen.findByTestId('fee-estimate-skeleton')).toBeInTheDocument();
+});
+
+test('shows fallback message when the fee rate cannot be fetched', async () => {
+  mockFeeApi({ mode: 'reject' });
+  renderComponent();
+
+  await userEvent.type(screen.getByPlaceholderText('0.00'), '25');
+
+  expect(
+    await screen.findByText(/Fee estimate unavailable — final fee will be shown at confirmation\./i)
+  ).toBeInTheDocument();
+});
+
+test('hides the fee panel when the amount is empty or zero', async () => {
+  mockFeeApi({ feeRate: { fee_bps: 250 } });
+  renderComponent();
+
+  // Empty by default
+  expect(screen.queryByTestId('fee-estimate')).not.toBeInTheDocument();
+
+  // Zero amount stays hidden
+  await userEvent.type(screen.getByPlaceholderText('0.00'), '0');
+  await waitFor(() =>
+    expect(screen.queryByTestId('fee-estimate')).not.toBeInTheDocument()
+  );
+});

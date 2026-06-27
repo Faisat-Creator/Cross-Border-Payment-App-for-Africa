@@ -35,6 +35,15 @@ async function sendExpiryNotification(email, name, recipientWallet, amount, asse
        <p>You have unclaimed funds of <strong>${amount} ${asset}</strong> waiting for you!</p>
        <p>⚠️ These funds will expire in <strong>${daysLeft} day${daysLeft > 1 ? 's' : ''}</strong> if not claimed.</p>
        <p><a href="${process.env.FRONTEND_URL}/dashboard">Claim your funds now</a></p>`;
+
+  await transporter.sendMail({
+    from: process.env.SMTP_FROM || process.env.SMTP_USER,
+    to: email,
+    subject,
+    html: message
+  });
+}
+
 async function sendPasswordResetEmail(email, token) {
   const url = `${process.env.FRONTEND_URL}/reset-password?token=${encodeURIComponent(token)}`;
   await transporter.sendMail({
@@ -128,11 +137,6 @@ async function sendTransactionEmail(email, type, tx) {
     to: email,
     subject,
     html: message
-  });
-}
-
-module.exports = { sendVerificationEmail, sendExpiryNotification };
-    html
   });
 }
 

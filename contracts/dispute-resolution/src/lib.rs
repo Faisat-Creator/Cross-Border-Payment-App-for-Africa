@@ -33,6 +33,7 @@ pub enum DataKey {
     Admin,
     Arbitrator,
     UsdcAddress,
+    MaxEvidenceBytes,
     Counter,
     Dispute(u64),
 }
@@ -103,6 +104,7 @@ pub struct EvtDisputeResolved {
 #[contracttype]
 pub struct EvtDisputeExpired {
     pub dispute_id: u64,
+    pub sender: Address,
     pub refund_amount: i128,
 }
 
@@ -116,16 +118,24 @@ impl DisputeResolutionContract {
     /// Initialise the contract. Must be called once before any other function.
     ///
     /// # Arguments
-    /// * `admin`        — Address that may update the arbitrator.
-    /// * `arbitrator`   — Neutral third party authorised to resolve disputes.
-    /// * `usdc_address` — Stellar asset contract address for USDC.
-    pub fn initialize(env: Env, admin: Address, arbitrator: Address, usdc_address: Address) {
+    /// * `admin`              — Address that may update the arbitrator.
+    /// * `arbitrator`         — Neutral third party authorised to resolve disputes.
+    /// * `usdc_address`       — Stellar asset contract address for USDC.
+    /// * `max_evidence_bytes` — Maximum allowed size in bytes for submitted evidence.
+    pub fn initialize(
+        env: Env,
+        admin: Address,
+        arbitrator: Address,
+        usdc_address: Address,
+        max_evidence_bytes: u32,
+    ) {
         if env.storage().persistent().has(&DataKey::Admin) {
             panic!("already initialized");
         }
         env.storage().persistent().set(&DataKey::Admin, &admin);
         env.storage().persistent().set(&DataKey::Arbitrator, &arbitrator);
         env.storage().persistent().set(&DataKey::UsdcAddress, &usdc_address);
+        env.storage().persistent().set(&DataKey::MaxEvidenceBytes, &max_evidence_bytes);
         env.storage().persistent().set(&DataKey::Counter, &0u64);
     }
 
@@ -217,8 +227,13 @@ impl DisputeResolutionContract {
     /// * `dispute_id` — ID returned by `open_dispute`.
     /// * `evidence`   — IPFS CID or content hash (max 256 bytes).
     pub fn submit_evidence(env: Env, submitter: Address, dispute_id: u64, evidence: Bytes) {
-        if evidence.len() > 256 {
-            panic!("evidence must be 256 bytes or fewer");
+        let max_evidence_bytes: u32 = env
+            .storage()
+            .persistent()
+            .get(&DataKey::MaxEvidenceBytes)
+            .expect("not initialized");
+        if evidence.len() > max_evidence_bytes {
+            panic!("evidence exceeds maximum allowed size");
         }
 
         submitter.require_auth();
@@ -370,6 +385,7 @@ impl DisputeResolutionContract {
             (Symbol::new(&env, "DisputeExpired"),),
             EvtDisputeExpired {
                 dispute_id,
+                sender: dispute.sender.clone(),
                 refund_amount: dispute.amount,
             },
         );

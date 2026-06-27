@@ -1,6 +1,6 @@
 import React from 'react';
 import { Outlet, NavLink, useNavigate, useLocation } from 'react-router-dom';
-import { LayoutDashboard, Send, Download, Clock, Upload, User, LogOut, Sun, Moon, Bell, BellOff, AlertTriangle, ArrowUpDown } from 'lucide-react';
+import { LayoutDashboard, Send, Download, Clock, Upload, User, LogOut, Sun, Moon, Bell, BellOff, AlertTriangle, ArrowUpDown, PiggyBank, Lock } from 'lucide-react';
 import { useAuth } from '../context/AuthContext';
 import { useTheme } from '../context/ThemeContext';
 import { usePushNotifications } from '../hooks/usePushNotifications';
@@ -10,9 +10,10 @@ import OfflineBanner from './OfflineBanner';
 const navItems = [
   { to: '/dashboard', icon: LayoutDashboard, label: 'Dashboard' },
   { to: '/send', icon: Send, label: 'Send' },
-  { to: '/batch-payments', icon: Upload, label: 'Batch' },
   { to: '/swap', icon: ArrowUpDown, label: 'Swap' },
+  { to: '/save', icon: PiggyBank, label: 'Save' },
   { to: '/receive', icon: Download, label: 'Receive' },
+  { to: '/escrow', icon: Lock, label: 'Escrow' },
   { to: '/history', icon: Clock, label: 'History' },
   { to: '/profile', icon: User, label: 'Profile' },
 ];
@@ -20,7 +21,7 @@ const navItems = [
 const isTestnet = process.env.REACT_APP_STELLAR_NETWORK !== 'mainnet';
 
 export default function Layout() {
-  const { logout } = useAuth();
+  const { user, logout } = useAuth();
   const navigate = useNavigate();
   const location = useLocation();
   const { theme, toggleTheme } = useTheme();
@@ -109,7 +110,16 @@ export default function Layout() {
           >
             {({ isActive }) => (
               <>
-                <Icon size={20} strokeWidth={isActive ? 2.5 : 1.75} />
+                {to === '/profile' && user ? (
+                  <div className={`w-5 h-5 rounded-full overflow-hidden flex items-center justify-center text-[10px] font-bold ${isActive ? 'ring-2 ring-primary-500' : ''} ${user.avatar_url ? '' : 'bg-primary-500 text-white'}`}>
+                    {user.avatar_url
+                      ? <img src={user.avatar_url} alt="avatar" className="w-full h-full object-cover" />
+                      : user.full_name?.[0]?.toUpperCase()
+                    }
+                  </div>
+                ) : (
+                  <Icon size={20} strokeWidth={isActive ? 2.5 : 1.75} />
+                )}
                 <span>{label}</span>
               </>
             )}

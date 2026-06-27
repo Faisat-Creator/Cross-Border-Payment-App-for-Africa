@@ -71,11 +71,27 @@ async function markClaimed(req, res, next) {
   try {
     const { id } = req.params;
     const { txHash } = req.body;
+    const userId = req.user.userId;
+
+    const result = await db.query(
+      `SELECT requester_id, claimed FROM payment_requests WHERE id = $1 AND expires_at > NOW()`,
+      [id]
+    );
+
+    if (!result.rows[0]) {
+      return res.status(404).json({ error: 'Payment request not found or expired' });
+    }
+
+    if (result.rows[0].requester_id !== userId) {
+      return res.status(403).json({ error: 'Only the intended recipient can claim this payment request' });
+    }
+
+    if (result.rows[0].claimed) {
+      return res.status(409).json({ error: 'Payment request already claimed' });
+    }
 
     await db.query(
-      `UPDATE payment_requests
-       SET claimed = true, claimed_tx_hash = $1
-       WHERE id = $2`,
+      `UPDATE payment_requests SET claimed = true, claimed_tx_hash = $1 WHERE id = $2`,
       [txHash, id]
     );
 

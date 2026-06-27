@@ -31,6 +31,7 @@ pub struct EvtFeeDeposited {
     pub depositor: Address,
     pub amount: i128,
     pub total: i128,
+    pub source: Option<Address>,
 }
 
 #[derive(Clone)]
@@ -39,6 +40,7 @@ pub struct EvtFeesWithdrawn {
     pub admin: Address,
     pub amount: i128,
     pub remaining: i128,
+    pub timestamp: u64,
 }
 
 // ── Contract ──────────────────────────────────────────────────────────────────
@@ -70,7 +72,7 @@ impl FeeDistributorContract {
     /// # Arguments
     /// * `depositor` — Address sending the fee (must authorise this call).
     /// * `amount`    — Fee amount in USDC stroops (must be > 0).
-    pub fn deposit_fee(env: Env, depositor: Address, amount: i128) {
+    pub fn deposit_fee(env: Env, depositor: Address, amount: i128, source: Option<Address>) {
         if amount <= 0 {
             panic!("amount must be positive");
         }
@@ -102,7 +104,7 @@ impl FeeDistributorContract {
 
         env.events().publish(
             (Symbol::new(&env, "FeeDeposited"),),
-            EvtFeeDeposited { depositor, amount, total },
+            EvtFeeDeposited { depositor, amount, total, source },
         );
     }
 
@@ -165,7 +167,7 @@ impl FeeDistributorContract {
 
         env.events().publish(
             (Symbol::new(&env, "FeesWithdrawn"),),
-            EvtFeesWithdrawn { admin, amount, remaining },
+            EvtFeesWithdrawn { admin, amount, remaining, timestamp: env.ledger().timestamp() },
         );
     }
 }

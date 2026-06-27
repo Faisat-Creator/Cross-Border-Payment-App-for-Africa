@@ -74,6 +74,37 @@ router.post('/swap',
 );
 
 /**
+ * GET /api/dex/trades
+ * @protected — returns Horizon trade history for the authenticated user's wallet.
+ * Calls getTradeHistory from services/dex.js.
+ */
+router.get('/trades',
+  authMiddleware,
+  [
+    query('cursor').optional().isString().trim().notEmpty().withMessage('cursor must be a non-empty string'),
+    query('limit').optional().isInt({ min: 1, max: 200 }).withMessage('limit must be 1–200'),
+  ],
+  validate,
+  async (req, res, next) => {
+    try {
+      const limit = req.query.limit ? parseInt(req.query.limit, 10) : 50;
+      const cursor = req.query.cursor || null;
+
+      const walletResult = await db.query(
+        'SELECT public_key FROM wallets WHERE user_id = $1 ORDER BY is_default DESC LIMIT 1',
+        [req.user.userId]
+      );
+      if (!walletResult.rows[0]) return res.status(404).json({ error: 'Wallet not found' });
+
+      const trades = await getTradeHistory(walletResult.rows[0].public_key, cursor, limit);
+      res.json({ trades });
+    } catch (err) {
+      next(err);
+    }
+  }
+);
+
+/**
  * GET /api/dex/offers/history
  * @protected — returns offer history scoped to the authenticated user's wallet.
  */

@@ -1,10 +1,4 @@
-const router = require('express').Router();
-const { body, query, validationResult } = require('express-validator');
-const StellarSdk = require('@stellar/stellar-sdk');
-const authMiddleware = require('../middleware/auth');
-const idempotency = require('../middleware/idempotency');
-const paymentSendValidators = require('../validators/paymentSendValidators');
-const paymentBatchValidators = require('../validators/paymentBatchValidators');
+const router = require("express").Router();
 ﻿const router = require("express").Router();
 const { body, query, validationResult } = require("express-validator");
 const StellarSdk = require("@stellar/stellar-sdk");
@@ -20,15 +14,11 @@ const {
   exportCSV,
   estimateFee,
   getFeeStats,
+  getFeeRate,
   findPath,
   sendPath,
   findReceivePathHandler,
   sendStrictReceivePath,
-} = require('../controllers/paymentController');
-const { buildTransaction, submitSigned } = require('../controllers/ledgerController');
-const { resolveFederationAddress } = require('../services/stellar');
-const { isMemoRequired } = require('../services/memoRequired');
-const { ALLOWED_HISTORY_ASSETS } = require('../utils/historyQuery');
 } = require("../controllers/paymentController");
 const { buildTransaction, submitSigned } = require("../controllers/ledgerController");
 const { resolveFederationAddress } = require("../services/stellar");
@@ -42,9 +32,6 @@ const STELLAR_MIN = 0.0000001;
 // Configurable max per transaction (env var, default 100 000)
 const MAX_TX = parseFloat(process.env.MAX_TRANSACTION_AMOUNT || "100000");
 
-const VALID_ASSETS = ['XLM', 'USDC', 'NGN', 'GHS', 'KES'];
-
-function amountLimits(field = 'amount') {
 function amountLimits(field = "amount") {
   return body(field)
     .isFloat({ gt: 0 }).withMessage("Amount must be greater than 0")
@@ -64,26 +51,24 @@ const validate = (req, res, next) => {
 
 router.use(authMiddleware);
 
-router.get('/estimate-fee', estimateFee);
-router.get('/fee-stats', getFeeStats);
+router.get("/estimate-fee", estimateFee);
+router.get("/fee-stats", getFeeStats);
+router.get("/fee-rate", getFeeRate);
 
 /**
  * POST /api/payments/send
  * @protected @idempotent
  * Idempotency-Key header prevents duplicate payments on client retry.
  */
-router.post('/send', paymentSendValidators, validate, idempotency, send);
+router.post("/send", paymentSendValidators, validate, idempotency, send);
 
 /**
  * POST /api/payments/batch
  * @protected @idempotent
  */
-router.post('/batch', paymentBatchValidators, validate, idempotency, sendBatch);
+router.post("/batch", paymentBatchValidators, validate, idempotency, sendBatch);
 
 // Federation address resolution
-router.get(
-  '/resolve-federation',
-  [query('address').notEmpty().withMessage('Address is required')],
 router.get(
   "/resolve-federation",
   [query("address").notEmpty().withMessage("Address is required")],
@@ -100,9 +85,6 @@ router.get(
 
 // Memo requirement check
 router.get(
-  '/memo-required',
-  [query('address').notEmpty().withMessage('Address is required')],
-router.get(
   "/memo-required",
   [query("address").notEmpty().withMessage("Address is required")],
   validate,
@@ -116,26 +98,25 @@ router.get(
   },
 );
 
+/**
+ * POST /api/payments/send
+ * @protected @idempotent
+ * Idempotency-Key header prevents duplicate payments on client retry.
+ * Closes #492
+ */
 router.post(
-  '/send',
+  "/send",
   paymentSendValidators,
-router.post('/send',
-  [
-    body('recipient_address')
-      .notEmpty().withMessage('Recipient address is required')
-      .custom((value) => {
-        if (!value.includes('*') && !StellarSdk.StrKey.isValidEd25519PublicKey(value)) {
-          throw new Error('Invalid Stellar wallet address or federation address');
-        }
-        return true;
-      }),
-    amountLimits('amount'),
-    body('asset').optional().isIn(['XLM', 'USDC', 'NGN', 'GHS', 'KES']),
-  ],
   validate,
   idempotency,
   send,
 );
+
+/**
+ * POST /api/payments/batch
+ * @protected @idempotent
+ */
+router.post("/batch", paymentBatchValidators, validate, idempotency, sendBatch);
 
 /**
  * @swagger
@@ -152,7 +133,7 @@ router.post('/send',
  *           type: string
  *           enum: [sent, received, all]
  *           default: all
- *         description: Filter by transaction direction. Translated to a SQL WHERE clause on sender_wallet or recipient_wallet.
+ *         description: Filter by transaction direction.
  *       - in: query
  *         name: from
  *         schema:
@@ -189,17 +170,9 @@ router.post('/send',
  *         description: Invalid query parameters
  */
 router.get(
-  '/history',
+  "/history",
   [
     query('page').optional().isInt({ min: 1 }).withMessage('page must be a positive integer'),
-    query('limit').optional().isInt({ min: 1, max: 100 }).withMessage('limit must be between 1 and 100'),
-    query('from').optional({ values: 'falsy' }).trim().isISO8601().withMessage('from must be a valid ISO 8601 date'),
-    query('to').optional({ values: 'falsy' }).trim().isISO8601().withMessage('to must be a valid ISO 8601 date'),
-    query('asset')
-      .optional({ values: 'falsy' })
-      .trim()
-      .isIn(ALLOWED_HISTORY_ASSETS)
-      .withMessage(`asset must be one of: ${ALLOWED_HISTORY_ASSETS.join(', ')}`),
     query("limit").optional().isInt({ min: 1, max: 100 }).withMessage("limit must be between 1 and 100"),
     query("from").optional({ values: "falsy" }).trim().isISO8601().withMessage("from must be a valid ISO 8601 date"),
     query("to").optional({ values: "falsy" }).trim().isISO8601().withMessage("to must be a valid ISO 8601 date"),
@@ -217,18 +190,6 @@ router.get(
   history,
 );
 
-router.get('/export', exportCSV);
-
-router.post(
-  '/find-path',
-  [
-    body('source_asset').isIn(VALID_ASSETS).withMessage('Invalid source asset'),
-    amountLimits('source_amount'),
-    body('destination_asset').isIn(VALID_ASSETS).withMessage('Invalid destination asset'),
-    body('recipient_address')
-      .notEmpty()
-      .custom((value) => {
-        if (!StellarSdk.StrKey.isValidEd25519PublicKey(value)) throw new Error('Invalid Stellar wallet address');
 router.get("/export", exportCSV);
 
 router.post(
@@ -253,22 +214,14 @@ router.post(
  * @protected @idempotent
  * Idempotency-Key header prevents duplicate path payments on client retry
  * (e.g. network timeout causing the client to resend the same request).
+ * Closes #493
  */
 router.post(
-  '/send-path',
   "/send-path",
   [
-    body('recipient_address')
+    body("recipient_address")
       .notEmpty()
       .custom((value) => {
-        if (!StellarSdk.StrKey.isValidEd25519PublicKey(value)) throw new Error('Invalid Stellar wallet address');
-        return true;
-      }),
-    body('source_asset').isIn(VALID_ASSETS).withMessage('Invalid source asset'),
-    amountLimits('source_amount'),
-    body('destination_asset').isIn(VALID_ASSETS).withMessage('Invalid destination asset'),
-    body('destination_min_amount').isFloat({ gt: 0 }).withMessage('destination_min_amount must be greater than 0'),
-    body('path').optional().isArray(),
         if (!StellarSdk.StrKey.isValidEd25519PublicKey(value)) throw new Error("Invalid Stellar wallet address");
         return true;
       }),
@@ -349,7 +302,7 @@ router.post(
 );
 
 // User-specific analytics (accessible to all authenticated users)
-const { summary: userAnalyticsSummary } = require('../controllers/analyticsController');
-router.get('/analytics', userAnalyticsSummary);
+const { summary: userAnalyticsSummary } = require("../controllers/analyticsController");
+router.get("/analytics", userAnalyticsSummary);
 
 module.exports = router;

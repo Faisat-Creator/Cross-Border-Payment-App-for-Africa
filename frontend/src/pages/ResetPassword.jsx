@@ -1,9 +1,10 @@
 import React, { useState } from 'react';
 import { useNavigate, useSearchParams, Link } from 'react-router-dom';
 import toast from 'react-hot-toast';
-import { Eye, EyeOff, ArrowLeft } from 'lucide-react';
+import { Eye, EyeOff, ArrowLeft, Check, X, AlertCircle } from 'lucide-react';
 import { useTranslation } from 'react-i18next';
 import api from '../utils/api';
+import { getPasswordStrength, getPasswordError } from '../utils/passwordValidator';
 
 export default function ResetPassword() {
   const navigate = useNavigate();
@@ -14,9 +15,20 @@ export default function ResetPassword() {
   const [password, setPassword] = useState('');
   const [showPass, setShowPass] = useState(false);
   const [loading, setLoading] = useState(false);
+  const [touched, setTouched] = useState(false);
+
+  const strength = getPasswordStrength(password);
+  const passwordError = touched ? getPasswordError(password) : '';
 
   const handleSubmit = async (e) => {
     e.preventDefault();
+    setTouched(true);
+
+    if (passwordError) {
+      toast.error(passwordError);
+      return;
+    }
+
     if (!tokenFromUrl.trim()) {
       toast.error(t('passwordReset.missing_token'));
       return;
@@ -62,7 +74,10 @@ export default function ResetPassword() {
                 minLength={8}
                 value={password}
                 onChange={(e) => setPassword(e.target.value)}
-                className="w-full bg-gray-800 border border-gray-700 rounded-xl px-4 py-3 text-white placeholder-gray-500 focus:outline-none focus:border-primary-500 transition-colors pr-12"
+                onBlur={() => setTouched(true)}
+                className={`w-full bg-gray-800 border rounded-xl px-4 py-3 text-white placeholder-gray-500 focus:outline-none focus:border-primary-500 transition-colors pr-12 ${
+                  passwordError ? 'border-red-500' : 'border-gray-700'
+                }`}
                 placeholder={t('login.password_placeholder')}
               />
               <button
@@ -73,10 +88,38 @@ export default function ResetPassword() {
                 {showPass ? <EyeOff size={18} /> : <Eye size={18} />}
               </button>
             </div>
+            {passwordError && (
+              <p className="text-xs text-red-500 mt-1 flex items-center gap-1">
+                <AlertCircle size={12} /> {passwordError}
+              </p>
+            )}
+            {password && (
+              <div className="mt-2 space-y-2">
+                <div className="flex gap-1">
+                  {[1, 2, 3, 4, 5].map(i => (
+                    <div key={i} className={`h-1 flex-1 rounded-full transition-colors ${i <= strength.score ? strength.barColor : 'bg-gray-700'}`} />
+                  ))}
+                </div>
+                <p className={`text-xs font-medium capitalize ${strength.textColor}`}>{strength.label}</p>
+                <ul className="space-y-1">
+                  {[
+                    { key: 'length', label: 'At least 8 characters' },
+                    { key: 'uppercase', label: 'One uppercase letter' },
+                    { key: 'lowercase', label: 'One lowercase letter' },
+                    { key: 'number', label: 'One number' },
+                    { key: 'special', label: 'One special character' },
+                  ].map(({ key, label }) => (
+                    <li key={key} className={`flex items-center gap-1.5 text-xs ${strength.checks[key] ? 'text-green-500' : 'text-gray-500'}`}>
+                      {strength.checks[key] ? <Check size={12} /> : <X size={12} />} {label}
+                    </li>
+                  ))}
+                </ul>
+              </div>
+            )}
           </div>
           <button
             type="submit"
-            disabled={loading || !tokenFromUrl.trim()}
+            disabled={loading || !tokenFromUrl.trim() || passwordError}
             className="w-full bg-primary-500 hover:bg-primary-600 disabled:opacity-50 text-white font-semibold py-3.5 rounded-xl transition-colors"
           >
             {loading ? t('passwordReset.reset_submitting') : t('passwordReset.reset_submit')}

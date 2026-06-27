@@ -1,55 +1,9 @@
 const crypto = require('crypto');
-const dns = require('dns').promises;
 const db = require('../db');
+const { validatePublicUrl } = require('../utils/ssrfValidator');
+const { retryDelivery } = require('../services/webhook');
 
 const VALID_EVENTS = ['payment.sent', 'payment.received', 'payment.failed'];
-
-// RFC 1918, loopback, link-local, and cloud metadata ranges
-const BLOCKED_CIDRS = [
-  [0x0a000000, 0xff000000],   // 10.0.0.0/8
-  [0xac100000, 0xfff00000],   // 172.16.0.0/12
-  [0xc0a80000, 0xffff0000],   // 192.168.0.0/16
-  [0x7f000000, 0xff000000],   // 127.0.0.0/8  (loopback)
-  [0xa9fe0000, 0xffff0000],   // 169.254.0.0/16 (link-local / metadata)
-  [0x64400000, 0xffc00000],   // 100.64.0.0/10 (shared address space)
-  [0x00000000, 0xff000000],   // 0.0.0.0/8
-  [0xe0000000, 0xf0000000],   // 224.0.0.0/4  (multicast)
-  [0xf0000000, 0xf0000000],   // 240.0.0.0/4  (reserved)
-];
-
-function ipToInt(ip) {
-  return ip.split('.').reduce((acc, octet) => (acc << 8) + parseInt(octet, 10), 0) >>> 0;
-}
-
-function isPrivateIp(ip) {
-  // IPv6 loopback / link-local
-  if (ip === '::1' || ip.startsWith('fe80') || ip.startsWith('fc') || ip.startsWith('fd')) return true;
-  // Only check IPv4
-  if (!/^\d{1,3}(\.\d{1,3}){3}$/.test(ip)) return false;
-  const n = ipToInt(ip);
-  return BLOCKED_CIDRS.some(([net, mask]) => (n & mask) === (net & mask));
-}
-
-async function validatePublicUrl(url) {
-  let parsed;
-  try { parsed = new URL(url); } catch { return false; }
-  if (parsed.protocol !== 'https:') return false;
-
-  // Reject if hostname is a bare IP
-  const hostname = parsed.hostname;
-  if (/^\d{1,3}(\.\d{1,3}){3}$/.test(hostname)) {
-    if (isPrivateIp(hostname)) return false;
-  }
-
-  // Resolve hostname and check all returned IPs
-  try {
-    const { address } = await dns.lookup(hostname);
-    if (isPrivateIp(address)) return false;
-  } catch {
-    return false; // unresolvable hostname
-  }
-  return true;
-}
 
 async function create(req, res, next) {
   try {
@@ -90,4 +44,48 @@ async function list(req, res, next) {
   }
 }
 
-module.exports = { create, list };
+async function listDeliveries(req, res, next) {
+  try {
+    const { webhook_id } = req.query;
+    let query = `
+      SELECT wd.id, wd.webhook_id, wd.event_type, wd.target_url, wd.status_code,
+             wd.response_time_ms, wd.status, wd.attempt, wd.max_attempts, wd.error_message,
+             wd.created_at, wd.completed_at
+      FROM webhook_deliveries wd
+      JOIN webhooks w ON w.id = wd.webhook_id
+      WHERE w.user_id = $1
+    `;
+    const params = [req.user.userId];
+    if (webhook_id) {
+      params.push(webhook_id);
+      query += ` AND wd.webhook_id = $${params.length}`;
+    }
+    query += ` ORDER BY wd.created_at DESC LIMIT 100`;
+    const { rows } = await db.query(query, params);
+    res.json({ deliveries: rows });
+  } catch (err) {
+    next(err);
+  }
+}
+
+async function retry(req, res, next) {
+  try {
+    const { id } = req.params;
+    // Verify ownership
+    const { rows } = await db.query(
+      `SELECT wd.id FROM webhook_deliveries wd
+       JOIN webhooks w ON w.id = wd.webhook_id
+       WHERE wd.id = $1 AND w.user_id = $2`,
+      [id, req.user.userId]
+    );
+    if (!rows.length) {
+      return res.status(404).json({ error: 'Delivery not found or not owned by user' });
+    }
+    await retryDelivery(id);
+    res.json({ message: 'Retry initiated' });
+  } catch (err) {
+    next(err);
+  }
+}
+
+module.exports = { create, list, listDeliveries, retry };

@@ -249,8 +249,31 @@ fi
 
 echo -e "${GREEN}✓ Contract ID written to $DEPLOYED_IDS_FILE${NC}"
 
-# Step 6: Output Stellar Explorer link
-echo -e "\n${YELLOW}Step 6: Verification${NC}"
+# Step 6 (security — fix #336): Initialize immediately after deployment.
+# Eliminates the front-running window: anyone who calls initialize() first
+# becomes admin. We call it here so there is no manual gap.
+echo -e "\n${YELLOW}Step 6: Initializing contract (front-running prevention — fix #336)...${NC}"
+
+if [ -n "${ADMIN_ADDRESS:-}" ] && [ -n "${USDC_ADDRESS:-}" ]; then
+    $SOROBAN_CLI contract invoke \
+        --id "$CONTRACT_ID" \
+        --source "$SOROBAN_SECRET_KEY" \
+        --network "$NETWORK" \
+        -- initialize \
+        --admin "$ADMIN_ADDRESS" \
+        --usdc_address "$USDC_ADDRESS"
+    echo -e "${GREEN}✓ Contract initialized. Admin: ${ADMIN_ADDRESS}${NC}"
+else
+    echo -e "${RED}WARNING: ADMIN_ADDRESS or USDC_ADDRESS not set — contract is uninitialized!${NC}"
+    echo -e "${RED}Anyone can call initialize() and become admin. Run immediately:${NC}"
+    echo "  export ADMIN_ADDRESS=G... USDC_ADDRESS=C..."
+    echo "  $SOROBAN_CLI contract invoke --id $CONTRACT_ID --source \$SOROBAN_SECRET_KEY --network $NETWORK -- initialize --admin \$ADMIN_ADDRESS --usdc_address \$USDC_ADDRESS"
+    echo ""
+    echo -e "${RED}Do not share this contract ID until initialize() has been called.${NC}"
+fi
+
+# Step 7: Output Stellar Explorer link
+echo -e "\n${YELLOW}Step 7: Verification${NC}"
 
 if [ "$NETWORK" = "mainnet" ]; then
     EXPLORER_URL="https://stellar.expert/explorer/public/contract/$CONTRACT_ID"
@@ -269,7 +292,7 @@ echo -e "${YELLOW}Post-Deployment Checklist:${NC}"
 echo "  1. Source the deployed IDs into your backend .env:"
 echo "       cat contracts/.deployed_ids.env >> backend/.env"
 echo "     Or manually copy: ${ENV_VAR_NAME}=${CONTRACT_ID}"
-echo "  2. Call initialize() with admin address and USDC contract address"
+echo "  2. initialize() was called automatically in Step 6 (if ADMIN_ADDRESS/USDC_ADDRESS were set)"
 echo "  3. Restart the backend service to pick up the new contract ID"
 echo "  4. Verify the contract on Stellar Expert: $EXPLORER_URL"
 echo ""

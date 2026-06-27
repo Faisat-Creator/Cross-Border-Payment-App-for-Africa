@@ -16,6 +16,7 @@ import api from '../utils/api';
 import { useExchangeRates } from '../hooks/useExchangeRates';
 import toast from 'react-hot-toast';
 import { useTranslation } from 'react-i18next';
+import { Skeleton } from '../components/Skeleton';
 import QRScanner from '../components/QRScanner';
 import PINVerificationModal from '../components/PINVerificationModal';
 import XDRInspectorModal from '../components/XDRInspectorModal';
@@ -71,6 +72,10 @@ export default function SendMoney() {
   const [stepLoading, setStepLoading] = useState(false);
   const [{ step }, dispatchStep] = useReducer(stepReducer, { step: 1 });
   const [feeXLM, setFeeXLM] = useState(null);
+  // Issue #641: pre-submission fee estimation preview
+  const [feeEstimate, setFeeEstimate] = useState(null);
+  const [feeEstimateLoading, setFeeEstimateLoading] = useState(false);
+  const [feeEstimateError, setFeeEstimateError] = useState(false);
   const [contractSimData, setContractSimData] = useState(null);
   const [contractSimLoading, setContractSimLoading] = useState(false);
   const [requestId] = useState(searchParams.get('request'));
@@ -98,6 +103,7 @@ export default function SendMoney() {
   const [pathLoading, setPathLoading] = useState(false);
   const [memoRequired, setMemoRequired] = useState(false);
   const [memoError, setMemoError] = useState(false);
+  const { memoError: hashMemoError, validateMemo, getMemoPlaceholder, isMemoValid } = useMemoValidation();
   const memoRef = useRef(null);
   const [addressError, setAddressError] = useState(false);
   // 'send' = strict send (sender specifies exact amount), 'receive' = strict receive (recipient gets exact amount)
@@ -106,12 +112,16 @@ export default function SendMoney() {
   // Trustline check state
   const [trustlineWarning, setTrustlineWarning] = useState(null); // null | string (asset code)
 
+  // Path payment toggle — when enabled the user can pick a destination asset and
+  // the payment is routed via Stellar DEX path payment instead of a direct transfer.
+  const [usePathPayment, setUsePathPayment] = useState(false);
+
   // Ledger hardware wallet state
   const [showLedgerModal, setShowLedgerModal] = useState(false);
   const [unsignedXDR, setUnsignedXDR] = useState(null);
   const [ledgerNetworkPassphrase, setLedgerNetworkPassphrase] = useState(null);
 
-  const isCrossAsset = form.destination_asset && form.destination_asset !== form.asset;
+  const isCrossAsset = usePathPayment && form.destination_asset && form.destination_asset !== form.asset;
 
   /** Returns true for a valid Ed25519 public key or a federation address */
   const isValidStellarAddress = (addr) =>
@@ -173,6 +183,82 @@ export default function SendMoney() {
       .then((r) => setFeeStats(r.data))
       .catch(() => {});
   }, []);
+
+  // Issue #641: debounced fee estimation preview as the user types an amount.
+  useEffect(() => {
+    const gross = parseFloat(form.amount);
+    if (!form.amount || !Number.isFinite(gross) || gross <= 0) {
+      setFeeEstimate(null);
+      setFeeEstimateError(false);
+      setFeeEstimateLoading(false);
+      return;
+    }
+
+    let cancelled = false;
+    setFeeEstimateLoading(true);
+    setFeeEstimateError(false);
+
+    const timer = setTimeout(async () => {
+      try {
+        const [rateRes, networkRes] = await Promise.all([
+          api.get('/payments/fee-rate'),
+          api.get('/payments/estimate-fee'),
+        ]);
+        if (cancelled) return;
+        const feeBps = rateRes.data?.fee_bps;
+        if (feeBps == null || Number.isNaN(Number(feeBps))) {
+          throw new Error('Fee rate unavailable');
+        }
+        const platformFee = gross * (Number(feeBps) / 10000);
+        setFeeEstimate({
+          gross,
+          asset: form.asset,
+          feePct: Number(feeBps) / 100,
+          platformFee,
+          networkFeeXLM: networkRes.data?.fee_xlm ?? null,
+          netAmount: gross - platformFee,
+        });
+      } catch {
+        if (cancelled) return;
+        setFeeEstimate(null);
+        setFeeEstimateError(true);
+      } finally {
+        if (!cancelled) setFeeEstimateLoading(false);
+      }
+    }, 300);
+
+    return () => {
+      cancelled = true;
+      clearTimeout(timer);
+    };
+  // Fee estimation preview (Issue #641)
+  const [feePreview, setFeePreview] = useState(null);
+  const [feePreviewLoading, setFeePreviewLoading] = useState(false);
+  const [feePreviewError, setFeePreviewError] = useState(false);
+  useEffect(() => {
+    const amount = parseFloat(form.amount);
+    if (!amount || amount <= 0) {
+      setFeePreview(null);
+      setFeePreviewError(false);
+      return;
+    }
+    setFeePreviewLoading(true);
+    setFeePreviewError(false);
+    const timer = setTimeout(() => {
+      api
+        .get('/payments/fee-stats')
+        .then((r) => {
+          const feeBps = r.data?.fee_bps ?? 50;
+          const networkFeeXlm = r.data?.fee_xlm ?? 0.00001;
+          const platformFee = (amount * feeBps) / 10000;
+          const net = amount - platformFee;
+          setFeePreview({ amount, platformFee, feeBps, networkFeeXlm, net, asset: form.asset });
+        })
+        .catch(() => setFeePreviewError(true))
+        .finally(() => setFeePreviewLoading(false));
+    }, 300);
+    return () => clearTimeout(timer);
+  }, [form.amount, form.asset]);
 
   // Warn the user before closing/refreshing the tab when the form has data
   useBeforeUnload(

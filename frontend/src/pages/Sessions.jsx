@@ -3,12 +3,15 @@ import { useNavigate } from 'react-router-dom';
 import { ArrowLeft, Monitor, Trash2, LogOut } from 'lucide-react';
 import api from '../utils/api';
 import toast from 'react-hot-toast';
+import ConfirmModal from '../components/ConfirmModal';
 
 export default function Sessions() {
   const navigate = useNavigate();
   const [sessions, setSessions] = useState([]);
   const [loading, setLoading] = useState(true);
   const [revoking, setRevoking] = useState(null);
+  const [confirmAll, setConfirmAll] = useState(false);
+  const [confirmSingle, setConfirmSingle] = useState(null);
 
   const load = async () => {
     try {
@@ -33,6 +36,7 @@ export default function Sessions() {
       toast.error('Failed to revoke session');
     } finally {
       setRevoking(null);
+      setConfirmSingle(null);
     }
   };
 
@@ -46,6 +50,7 @@ export default function Sessions() {
       toast.error('Failed to revoke sessions');
     } finally {
       setRevoking(null);
+      setConfirmAll(false);
     }
   };
 
@@ -59,7 +64,7 @@ export default function Sessions() {
         <h2 className="text-2xl font-bold text-white">Active Sessions</h2>
         {sessions.length > 1 && (
           <button
-            onClick={revokeAll}
+            onClick={() => setConfirmAll(true)}
             disabled={revoking === 'all'}
             className="text-sm text-red-400 hover:text-red-300 flex items-center gap-1 disabled:opacity-50"
           >
@@ -108,7 +113,7 @@ export default function Sessions() {
 
               {!s.is_current && (
                 <button
-                  onClick={() => revoke(s.id)}
+                  onClick={() => setConfirmSingle(s)}
                   disabled={revoking === s.id}
                   className="text-red-400 hover:text-red-300 shrink-0 disabled:opacity-50"
                   aria-label="Revoke session"
@@ -124,6 +129,29 @@ export default function Sessions() {
           ))}
         </div>
       )}
+    </div>
+
+      <ConfirmModal
+        isOpen={confirmAll}
+        onClose={() => setConfirmAll(false)}
+        onConfirm={revokeAll}
+        title="Logout from all other sessions?"
+        message="This will immediately invalidate all other active sessions. You will remain logged in on this device. Any ongoing operations on those sessions will be interrupted."
+        confirmLabel="Logout Everywhere"
+        confirmVariant="danger"
+        loading={revoking === 'all'}
+      />
+
+      <ConfirmModal
+        isOpen={!!confirmSingle}
+        onClose={() => setConfirmSingle(null)}
+        onConfirm={() => revoke(confirmSingle.id)}
+        title="Revoke session?"
+        message={`This will immediately invalidate the session${confirmSingle ? ` on "${confirmSingle.device_info || 'Unknown device'}"` : ''}. The user will be signed out and any ongoing operations on that session will be interrupted.`}
+        confirmLabel="Revoke Session"
+        confirmVariant="danger"
+        loading={revoking === confirmSingle?.id}
+      />
     </div>
   );
 }

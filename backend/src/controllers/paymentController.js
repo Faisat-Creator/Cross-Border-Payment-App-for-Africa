@@ -16,6 +16,7 @@ const {
 } = require("../services/stellar");
 const webhook = require("../services/webhook");
 const cache = require("../utils/cache");
+const { sendTransactionEmail } = require("../services/email");
 const { checkVelocity, checkDailyLimit } = require("../services/fraudDetection");
 const { checkFraud, logFraudBlock } = require("../services/fraudDetection");
 const { parseHistoryFrom, parseHistoryTo, normalizeAsset, validateDateRange } = require("../utils/historyQuery");
@@ -159,6 +160,10 @@ async function estimateFee(req, res, next) {
   }
 }
 
+function getFeeRate(req, res) {
+  res.json({ fee_bps: FEE_BPS });
+}
+
 async function getFeeStats(req, res, next) {
   try {
     const stats = await fetchFeeStats();
@@ -180,6 +185,10 @@ async function getFeeStats(req, res, next) {
 }
 async function send(req, res, next) {
   const txId = uuidv4();
+  // declare these in outer scope so the catch block can reference them safely
+  let public_key, encrypted_secret_key, recipient_address, amount, asset, memo;
+  try {
+    ({ recipient_address, amount, asset = "XLM", memo } = req.body);
   let public_key;
   let recipient_address, amount, asset, memo, memo_type;
 
@@ -242,6 +251,7 @@ async function send(req, res, next) {
     const walletResult = await db.query(walletQuery.text, walletQuery.values);
     if (!walletResult.rows[0]) return res.status(404).json({ error: "Wallet not found" });
 
+    ({ public_key, encrypted_secret_key } = walletResult.rows[0]);
     ({ public_key } = walletResult.rows[0]);
     const { encrypted_secret_key } = walletResult.rows[0];
 
@@ -347,6 +357,18 @@ async function send(req, res, next) {
       webhook.deliver("payment.received", txData).catch(() => {});
     }
 
+    // Fire-and-forget email notifications
+    const emailTxData = { amount, asset, senderAddress: public_key, recipientAddress: recipient_address, memo: memo || null, txHash: transactionHash };
+    db.query("SELECT email FROM users WHERE id = $1", [req.user.userId])
+      .then(({ rows }) => rows[0] && sendTransactionEmail(rows[0].email, "sent", emailTxData))
+      .catch(() => {});
+    db.query(
+      "SELECT u.email FROM users u JOIN wallets w ON w.user_id = u.id WHERE w.public_key = $1 LIMIT 1",
+      [recipient_address],
+    )
+      .then(({ rows }) => rows[0] && sendTransactionEmail(rows[0].email, "received", emailTxData))
+      .catch(() => {});
+
     res.json({
       message: type === "claimable_balance" ? "Claimable balance created" : "Payment sent successfully",
       transaction: {
@@ -361,6 +383,11 @@ async function send(req, res, next) {
       },
     });
   } catch (err) {
+    // Do not persist a failed transaction here; let caller decide and avoid
+    // creating records when Stellar submission fails during business logic.
+    if (err.status === 400 || err.status === 500) {
+      webhook.deliver('payment.failed', { error: err.message }).catch(() => {});
+      return res.status(err.status).json({ error: err.message });
     // Issue #243: Insert a failed transaction record when sendPayment throws
     // and the sender wallet is known, to maintain a full audit trail.
     if (public_key) {
@@ -908,4 +935,4 @@ async function exportCSV(req, res, next) {
   }
 }
 
-module.exports = { send, sendBatch, history, findPath, sendPath, exportCSV, estimateFee, getFeeStats, findReceivePathHandler, sendStrictReceivePath };
+module.exports = { send, sendBatch, history, findPath, sendPath, exportCSV, estimateFee, getFeeStats, getFeeRate, findReceivePathHandler, sendStrictReceivePath };

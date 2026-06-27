@@ -1,5 +1,5 @@
 import React, { useState, useRef, useEffect } from 'react';
-import { useNavigate, Link } from 'react-router-dom';
+import { useNavigate, Link, useSearchParams } from 'react-router-dom';
 import { useAuth } from '../context/AuthContext';
 import toast from 'react-hot-toast';
 import { Eye, EyeOff, ArrowLeft, ShieldCheck } from 'lucide-react';
@@ -10,9 +10,22 @@ export default function Login() {
   const { login } = useAuth();
   const navigate = useNavigate();
   const { t } = useTranslation();
+  const [searchParams] = useSearchParams();
   const [form, setForm] = useState({ email: '', password: '' });
   const [showPass, setShowPass] = useState(false);
   const [loading, setLoading] = useState(false);
+  const [rememberMe, setRememberMe] = useState(() => {
+    return localStorage.getItem('afripay_remember_me') === 'true';
+  });
+
+  // Rate-limit cooldown (issue #655) — persisted across refreshes via sessionStorage
+  const COOLDOWN_KEY = 'afripay_login_cooldown_until';
+  const DEFAULT_COOLDOWN_SECONDS = 60;
+  const [secondsLeft, setSecondsLeft] = useState(() => {
+    const until = parseInt(sessionStorage.getItem(COOLDOWN_KEY) || '0', 10);
+    const remaining = Math.ceil((until - Date.now()) / 1000);
+    return remaining > 0 ? remaining : 0;
+  });
 
   // 2FA TOTP step
   const [requires2fa, setRequires2fa] = useState(false);
@@ -26,17 +39,48 @@ export default function Login() {
     }
   }, [requires2fa]);
 
+  // Tick the cooldown down every second; re-enable the button automatically at 0.
+  useEffect(() => {
+    if (secondsLeft <= 0) return undefined;
+    const timer = setInterval(() => {
+      const until = parseInt(sessionStorage.getItem(COOLDOWN_KEY) || '0', 10);
+      const remaining = Math.ceil((until - Date.now()) / 1000);
+      if (remaining <= 0) {
+        sessionStorage.removeItem(COOLDOWN_KEY);
+        setSecondsLeft(0);
+      } else {
+        setSecondsLeft(remaining);
+      }
+    }, 1000);
+    return () => clearInterval(timer);
+  }, [secondsLeft]);
+
+  const startCooldown = (seconds) => {
+    const until = Date.now() + seconds * 1000;
+    sessionStorage.setItem(COOLDOWN_KEY, String(until));
+    setSecondsLeft(seconds);
+  };
+
   const handleSubmit = async (e) => {
     e.preventDefault();
     setLoading(true);
     try {
       await login(form.email, form.password);
-      navigate('/dashboard');
+      // Persist remember-me preference
+      localStorage.setItem('afripay_remember_me', rememberMe.toString());
+      const redirectParam = searchParams.get('redirect');
+      const redirect = redirectParam || sessionStorage.getItem('afripay_redirect');
+      sessionStorage.removeItem('afripay_redirect');
+      navigate(redirect || '/dashboard');
     } catch (err) {
       const data = err.response?.data;
       if (err.response?.status === 403 && data?.requires_2fa) {
         // Backend signals that a TOTP code is required — switch to TOTP step
         setRequires2fa(true);
+      } else if (err.response?.status === 429) {
+        // Rate limit exceeded (issue #655) — start a countdown from Retry-After.
+        const retryAfter = parseInt(err.response.headers?.['retry-after'], 10);
+        startCooldown(Number.isFinite(retryAfter) && retryAfter > 0 ? retryAfter : DEFAULT_COOLDOWN_SECONDS);
       } else {
         toast.error(data?.error || t('login.error'));
       }
@@ -167,18 +211,44 @@ export default function Login() {
                 </div>
               </div>
 
-              <div className="text-right">
+              <div className="flex items-center justify-between">
+                <label className="flex items-center gap-2 cursor-pointer">
+                  <input
+                    type="checkbox"
+                    checked={rememberMe}
+                    onChange={(e) => setRememberMe(e.target.checked)}
+                    className="w-4 h-4 rounded border-gray-300 text-primary-500 focus:ring-primary-500 cursor-pointer"
+                  />
+                  <span className="text-sm text-gray-600 dark:text-gray-400">{t('login.remember_me', 'Remember me')}</span>
+                </label>
                 <Link to="/forgot-password" className="text-sm text-primary-500 hover:underline">
                   {t('login.forgot_password')}
                 </Link>
               </div>
 
+              {secondsLeft > 0 && (
+                <div
+                  role="alert"
+                  aria-live="assertive"
+                  className="flex items-start gap-2 rounded-xl border border-red-200 dark:border-red-500/30 bg-red-50 dark:bg-red-500/10 px-4 py-3 text-sm text-red-600 dark:text-red-400"
+                >
+                  <ShieldCheck size={16} className="mt-0.5 flex-shrink-0" />
+                  <span>
+                    {t('login.rate_limited', 'Too many login attempts.')} Please wait {secondsLeft}s before trying again.
+                  </span>
+                </div>
+              )}
+
               <button
                 type="submit"
-                disabled={loading}
-                className="w-full bg-primary-500 hover:bg-primary-600 disabled:opacity-50 text-white font-semibold py-3.5 rounded-xl transition-colors mt-2"
+                disabled={loading || secondsLeft > 0}
+                className="w-full bg-primary-500 hover:bg-primary-600 disabled:opacity-50 disabled:cursor-not-allowed text-white font-semibold py-3.5 rounded-xl transition-colors mt-2"
               >
-                {loading ? t('login.submitting') : t('login.submit')}
+                {secondsLeft > 0
+                  ? `${t('login.try_again_in', 'Try again in')} ${secondsLeft}s`
+                  : loading
+                  ? t('login.submitting')
+                  : t('login.submit')}
               </button>
             </form>
 

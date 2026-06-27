@@ -3,11 +3,13 @@ const { body, validationResult } = require('express-validator');
 const StellarSdk = require('@stellar/stellar-sdk');
 const authMiddleware = require('../middleware/auth');
 const isAdmin = require('../middleware/isAdmin');
+const ipAllowlist = require('../middleware/ipAllowlist');
 const { issueTokens } = require('../controllers/assetController');
 const {
   getStats,
   getUsers,
   getTransactions,
+  getDailyTransactionStats,
   getStellarNetworkStats,
   clawback,
   approveKYC,
@@ -17,6 +19,7 @@ const {
   executeContractUpgrade,
   getContractUpgradeStatus,
   getContractEventsEndpoint,
+  getContractEventsGlobalEndpoint,
   indexContractEventsEndpoint
 } = require('../controllers/adminController');
 
@@ -26,6 +29,7 @@ const validate = (req, res, next) => {
   next();
 };
 
+router.use(ipAllowlist);
 router.use(authMiddleware);
 router.use(isAdmin);
 
@@ -57,6 +61,7 @@ router.get('/health', async (req, res) => {
 });
 
 router.get('/stats', getStats);
+router.get('/daily-stats', getDailyTransactionStats);
 router.get('/users', getUsers);
 router.get('/transactions', getTransactions);
 router.get('/stellar-stats', getStellarNetworkStats);
@@ -160,8 +165,9 @@ router.post(
 router.get('/contracts/:contractId/upgrade/status', getContractUpgradeStatus);
 
 /**
- * Contract Events Routes (Issue #147)
+ * Contract Events Routes (Issue #147, #527)
  */
+router.get('/contracts/events', getContractEventsGlobalEndpoint);
 router.get('/contracts/:contractId/events', getContractEventsEndpoint);
 
 router.post(

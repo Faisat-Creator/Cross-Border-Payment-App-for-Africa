@@ -169,6 +169,78 @@ async function cancel(req, res, next) {
 }
 
 /**
+ * POST /api/contracts/escrow/:id/partial-release
+ * Body: { amount }
+ *
+ * Sender releases part of a pending escrow to the agent (issue #657).
+ * Validates the amount against the remaining balance, applies the platform fee,
+ * records the cumulative released amount, and returns the new remaining balance.
+ */
+async function partialRelease(req, res, next) {
+  try {
+    const { id } = req.params;
+    const amount = parseFloat(req.body.amount);
+
+    if (!Number.isFinite(amount) || amount <= 0) {
+      return res.status(400).json({ error: "Amount must be greater than 0" });
+    }
+
+    const escrowResult = await db.query("SELECT * FROM agent_escrows WHERE id = $1", [id]);
+    if (!escrowResult.rows[0]) {
+      return res.status(404).json({ error: "Escrow not found" });
+    }
+    const escrow = escrowResult.rows[0];
+
+    if (escrow.status !== "pending") {
+      return res.status(400).json({ error: "Only pending escrows can be partially released" });
+    }
+    if (escrow.sender_wallet !== req.user.walletAddress) {
+      return res.status(403).json({ error: "Only the sender can release this escrow" });
+    }
+
+    const total = parseFloat(escrow.amount);
+    const alreadyReleased = parseFloat(escrow.released_amount || 0);
+    const remaining = total - alreadyReleased;
+
+    if (amount > remaining + 1e-7) {
+      return res.status(400).json({
+        error: `Amount exceeds remaining escrow balance (${remaining})`,
+      });
+    }
+
+    const feeBps = escrow.fee_bps || DEFAULT_FEE_BPS;
+    const feeAmount = (amount * feeBps) / 10000;
+    const netToAgent = amount - feeAmount;
+
+    const newReleased = alreadyReleased + amount;
+    const newRemaining = total - newReleased;
+    // Fully drained escrows transition to completed.
+    const fullyReleased = newRemaining <= 1e-7;
+
+    const updated = await db.query(
+      `UPDATE agent_escrows
+         SET released_amount = $1,
+             status = CASE WHEN $2 THEN 'completed' ELSE status END
+       WHERE id = $3
+       RETURNING *`,
+      [newReleased, fullyReleased, id]
+    );
+
+    res.json({
+      message: "Partial release successful",
+      escrow: updated.rows[0],
+      released: amount,
+      fee: feeAmount,
+      net_to_agent: netToAgent,
+      remaining_balance: newRemaining,
+      status: updated.rows[0].status,
+    });
+  } catch (err) {
+    next(err);
+  }
+}
+
+/**
  * GET /api/escrow/:id
  */
 async function getEscrow(req, res, next) {
@@ -186,4 +258,4 @@ async function getEscrow(req, res, next) {
   }
 }
 
-module.exports = { create, confirm, cancel, getEscrow };
+module.exports = { create, confirm, cancel, getEscrow, partialRelease };

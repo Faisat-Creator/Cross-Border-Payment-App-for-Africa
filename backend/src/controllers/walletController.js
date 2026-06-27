@@ -18,6 +18,7 @@ const {
   getDataEntries,
   getAccountFlags,
   setAccountFlags,
+  initMultisigApproval,
 } = require('../services/stellar');
 const QRCode = require('qrcode');
 const cache = require('../utils/cache');
@@ -230,8 +231,22 @@ async function exportKey(req, res, next) {
 // ---------------------------------------------------------------------------
 async function upgradeToBusinessAccount(req, res, next) {
   try {
+    const wallet = await resolveWallet(req.user.userId, req.body.wallet_id || null);
+    if (!wallet) return res.status(404).json({ error: 'Wallet not found' });
+
+    const { transactionHash } = await initMultisigApproval({
+      publicKey: wallet.public_key,
+      encryptedSecretKey: wallet.encrypted_secret_key,
+    });
+
     await db.query(`UPDATE users SET account_type = 'business' WHERE id = $1`, [req.user.userId]);
-    res.json({ message: 'Account upgraded to business' });
+
+    audit.log(req.user.userId, 'upgrade_to_business', req.ip, req.headers['user-agent'], {
+      wallet_id: wallet.id,
+      transaction_hash: transactionHash,
+    });
+
+    res.json({ message: 'Account upgraded to business', transaction_hash: transactionHash });
   } catch (err) {
     next(err);
   }
@@ -333,13 +348,14 @@ async function listTrustlines(req, res, next) {
 
 async function addTrustlineHandler(req, res, next) {
   try {
-    const { asset, limit, wallet_id } = req.body;
+    const { asset, asset_issuer, limit, wallet_id } = req.body;
     const wallet = await resolveWallet(req.user.userId, wallet_id || null);
     if (!wallet) return res.status(404).json({ error: 'Wallet not found' });
     const { transactionHash } = await addTrustline({
       publicKey: wallet.public_key,
       encryptedSecretKey: wallet.encrypted_secret_key,
       asset,
+      issuer: asset_issuer || undefined,
       limit,
     });
     res.status(201).json({ message: 'Trustline added', transaction_hash: transactionHash });
@@ -351,12 +367,14 @@ async function addTrustlineHandler(req, res, next) {
 async function removeTrustlineHandler(req, res, next) {
   try {
     const { asset } = req.params;
-    const wallet = await resolveWallet(req.user.userId, req.query.wallet_id || null);
+    const { wallet_id, asset_issuer } = req.query;
+    const wallet = await resolveWallet(req.user.userId, wallet_id || null);
     if (!wallet) return res.status(404).json({ error: 'Wallet not found' });
     const { transactionHash } = await removeTrustline({
       publicKey: wallet.public_key,
       encryptedSecretKey: wallet.encrypted_secret_key,
       asset,
+      issuer: asset_issuer || undefined,
     });
     res.json({ message: 'Trustline removed', transaction_hash: transactionHash });
   } catch (err) {

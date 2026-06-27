@@ -24,6 +24,12 @@ use soroban_sdk::{
     contract, contractimpl, contracttype, Address, Env, String,
 };
 
+#[contracttype]
+pub struct AllowanceValue {
+    pub amount: i128,
+    pub expires_at: u64,
+}
+
 mod test;
 
 // ── Storage keys ──────────────────────────────────────────────────────────────
@@ -32,6 +38,7 @@ mod test;
 pub enum DataKey {
     Admin,
     TotalSupply,
+    MaxSupply,
     Balance(Address),
     Allowance(Address, Address), // (owner, spender)
 }
@@ -53,13 +60,18 @@ impl LoyaltyTokenContract {
     /// Initialise the contract. Must be called once before any other function.
     ///
     /// # Arguments
-    /// * `admin` — Address authorised to mint tokens (the AfriPay backend).
-    pub fn initialize(env: Env, admin: Address) {
+    /// * `admin`      — Address authorised to mint tokens (the AfriPay backend).
+    /// * `max_supply` — Hard ceiling on total points that can ever be minted (must be > 0).
+    pub fn initialize(env: Env, admin: Address, max_supply: i128) {
         if env.storage().persistent().has(&DataKey::Admin) {
             panic!("already initialized");
         }
+        if max_supply <= 0 {
+            panic!("max_supply must be positive");
+        }
         env.storage().persistent().set(&DataKey::Admin, &admin);
         env.storage().persistent().set(&DataKey::TotalSupply, &0i128);
+        env.storage().persistent().set(&DataKey::MaxSupply, &max_supply);
     }
 
     // ── SEP-41: token metadata ────────────────────────────────────────────────
@@ -86,6 +98,13 @@ impl LoyaltyTokenContract {
             .unwrap_or(0)
     }
 
+    pub fn max_supply(env: Env) -> i128 {
+        env.storage()
+            .persistent()
+            .get(&DataKey::MaxSupply)
+            .expect("not initialized")
+    }
+
     pub fn balance(env: Env, account: Address) -> i128 {
         env.storage()
             .persistent()
@@ -96,22 +115,37 @@ impl LoyaltyTokenContract {
     // ── SEP-41: allowances ────────────────────────────────────────────────────
 
     pub fn allowance(env: Env, owner: Address, spender: Address) -> i128 {
-        env.storage()
+        let entry: Option<AllowanceValue> = env
+            .storage()
             .persistent()
-            .get(&DataKey::Allowance(owner, spender))
-            .unwrap_or(0)
+            .get(&DataKey::Allowance(owner, spender));
+        match entry {
+            None => 0,
+            Some(v) => {
+                if env.ledger().timestamp() > v.expires_at {
+                    0
+                } else {
+                    v.amount
+                }
+            }
+        }
     }
 
     /// Approve `spender` to transfer up to `amount` points on behalf of the
-    /// caller.
-    pub fn approve(env: Env, owner: Address, spender: Address, amount: i128) {
+    /// caller until `expires_at` (inclusive, Unix ledger timestamp).
+    ///
+    /// Set `amount` to 0 to revoke an existing allowance.
+    pub fn approve(env: Env, owner: Address, spender: Address, amount: i128, expires_at: u64) {
         if amount < 0 {
             panic!("amount must be non-negative");
+        }
+        if expires_at < env.ledger().timestamp() {
+            panic!("expires_at must be in the future");
         }
         owner.require_auth();
         env.storage()
             .persistent()
-            .set(&DataKey::Allowance(owner, spender), &amount);
+            .set(&DataKey::Allowance(owner, spender), &AllowanceValue { amount, expires_at });
     }
 
     // ── SEP-41: transfers ─────────────────────────────────────────────────────
@@ -139,19 +173,25 @@ impl LoyaltyTokenContract {
         }
         spender.require_auth();
 
-        let allowance: i128 = env
+        let entry: AllowanceValue = env
             .storage()
             .persistent()
             .get(&DataKey::Allowance(from.clone(), spender.clone()))
-            .unwrap_or(0);
+            .unwrap_or(AllowanceValue { amount: 0, expires_at: 0 });
 
-        if allowance < amount {
+        if env.ledger().timestamp() > entry.expires_at {
+            panic!("allowance expired");
+        }
+        if entry.amount < amount {
             panic!("insufficient allowance");
         }
 
         env.storage()
             .persistent()
-            .set(&DataKey::Allowance(from.clone(), spender), &(allowance - amount));
+            .set(&DataKey::Allowance(from.clone(), spender), &AllowanceValue {
+                amount: entry.amount - amount,
+                expires_at: entry.expires_at,
+            });
 
         Self::_debit(&env, &from, amount);
         Self::_credit(&env, &to, amount);
@@ -184,19 +224,25 @@ impl LoyaltyTokenContract {
         }
         spender.require_auth();
 
-        let allowance: i128 = env
+        let entry: AllowanceValue = env
             .storage()
             .persistent()
             .get(&DataKey::Allowance(from.clone(), spender.clone()))
-            .unwrap_or(0);
+            .unwrap_or(AllowanceValue { amount: 0, expires_at: 0 });
 
-        if allowance < amount {
+        if env.ledger().timestamp() > entry.expires_at {
+            panic!("allowance expired");
+        }
+        if entry.amount < amount {
             panic!("insufficient allowance");
         }
 
         env.storage()
             .persistent()
-            .set(&DataKey::Allowance(from.clone(), spender), &(allowance - amount));
+            .set(&DataKey::Allowance(from.clone(), spender), &AllowanceValue {
+                amount: entry.amount - amount,
+                expires_at: entry.expires_at,
+            });
 
         Self::_debit(&env, &from, amount);
         let supply: i128 = env
@@ -236,13 +282,21 @@ impl LoyaltyTokenContract {
             panic!("unauthorized: caller is not admin");
         }
 
-        Self::_credit(&env, &to, amount);
-
         let supply: i128 = env
             .storage()
             .persistent()
             .get(&DataKey::TotalSupply)
             .unwrap_or(0);
+        let cap: i128 = env
+            .storage()
+            .persistent()
+            .get(&DataKey::MaxSupply)
+            .expect("not initialized");
+        if supply + amount > cap {
+            panic!("minting would exceed max supply");
+        }
+
+        Self::_credit(&env, &to, amount);
         env.storage()
             .persistent()
             .set(&DataKey::TotalSupply, &(supply + amount));

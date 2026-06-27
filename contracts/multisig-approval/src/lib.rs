@@ -1,5 +1,5 @@
 #![no_std]
-use soroban_sdk::{contract, contractimpl, contracttype, Address, Env, Vec};
+use soroban_sdk::{contract, contractimpl, contracttype, Address, Env, String, Vec};
 
 mod test;
 
@@ -18,8 +18,20 @@ pub enum TxStatus {
 #[derive(Clone)]
 pub struct Proposal {
     pub proposer: Address,
+    pub description: String,
     pub amount: i128,
     pub recipient: Address,
+    pub approvals: u32,
+    pub rejections: u32,
+    pub status: TxStatus,
+    pub expires_at: u64,
+}
+
+#[contracttype]
+#[derive(Clone)]
+pub struct QuorumChangeProposal {
+    pub proposer: Address,
+    pub new_quorum: u32,
     pub approvals: u32,
     pub rejections: u32,
     pub status: TxStatus,
@@ -34,6 +46,9 @@ pub enum DataKey {
     TxCounter,
     Proposal(u64),
     Voted(u64, Address),
+    QuorumCounter,
+    QuorumProposal(u64),
+    QuorumVoted(u64, Address),
 }
 
 #[contract]
@@ -52,10 +67,14 @@ impl MultisigContract {
         env.storage().instance().set(&DataKey::Approvers, &approvers);
         env.storage().instance().set(&DataKey::Quorum, &quorum);
         env.storage().instance().set(&DataKey::TxCounter, &0u64);
+        env.storage().instance().set(&DataKey::QuorumCounter, &0u64);
     }
 
     /// Propose a new transaction. Any approver may propose.
-    pub fn propose_transaction(env: Env, proposer: Address, amount: i128, recipient: Address) -> u64 {
+    ///
+    /// # Arguments
+    /// * `description` — Human-readable summary of the transaction so approvers know what they are voting on.
+    pub fn propose_transaction(env: Env, proposer: Address, description: String, amount: i128, recipient: Address) -> u64 {
         proposer.require_auth();
         Self::assert_is_approver(&env, &proposer);
         assert!(amount > 0, "amount must be positive");
@@ -65,6 +84,7 @@ impl MultisigContract {
 
         let proposal = Proposal {
             proposer,
+            description,
             amount,
             recipient,
             approvals: 0,
@@ -132,6 +152,75 @@ impl MultisigContract {
             .expect("proposal not found")
     }
 
+    /// Propose a quorum threshold change. Any approver may propose.
+    /// The change takes effect only when the current quorum of approvers approve it.
+    pub fn propose_quorum_change(env: Env, proposer: Address, new_quorum: u32) -> u64 {
+        proposer.require_auth();
+        Self::assert_is_approver(&env, &proposer);
+        let approvers: Vec<Address> = env.storage().instance().get(&DataKey::Approvers).unwrap();
+        assert!(new_quorum > 0 && new_quorum as usize <= approvers.len(), "invalid quorum");
+
+        let id: u64 = env.storage().instance().get(&DataKey::QuorumCounter).unwrap();
+        let expires_at = env.ledger().timestamp() + EXPIRY_SECONDS;
+
+        let proposal = QuorumChangeProposal {
+            proposer,
+            new_quorum,
+            approvals: 0,
+            rejections: 0,
+            status: TxStatus::Pending,
+            expires_at,
+        };
+        env.storage().persistent().set(&DataKey::QuorumProposal(id), &proposal);
+        env.storage().instance().set(&DataKey::QuorumCounter, &(id + 1));
+        id
+    }
+
+    /// Approve a pending quorum-change proposal. Updates quorum when threshold is reached.
+    pub fn approve_quorum_change(env: Env, approver: Address, id: u64) {
+        approver.require_auth();
+        Self::assert_is_approver(&env, &approver);
+
+        let mut proposal = Self::get_pending_quorum(&env, id);
+        assert!(!env.storage().persistent().has(&DataKey::QuorumVoted(id, approver.clone())), "already voted");
+
+        env.storage().persistent().set(&DataKey::QuorumVoted(id, approver), &true);
+        proposal.approvals += 1;
+
+        let quorum: u32 = env.storage().instance().get(&DataKey::Quorum).unwrap();
+        if proposal.approvals >= quorum {
+            proposal.status = TxStatus::Executed;
+            env.storage().instance().set(&DataKey::Quorum, &proposal.new_quorum);
+        }
+        env.storage().persistent().set(&DataKey::QuorumProposal(id), &proposal);
+    }
+
+    /// Reject a pending quorum-change proposal. Marks as rejected when quorum is no longer reachable.
+    pub fn reject_quorum_change(env: Env, approver: Address, id: u64) {
+        approver.require_auth();
+        Self::assert_is_approver(&env, &approver);
+
+        let mut proposal = Self::get_pending_quorum(&env, id);
+        assert!(!env.storage().persistent().has(&DataKey::QuorumVoted(id, approver.clone())), "already voted");
+
+        env.storage().persistent().set(&DataKey::QuorumVoted(id, approver), &true);
+        proposal.rejections += 1;
+
+        let approvers: Vec<Address> = env.storage().instance().get(&DataKey::Approvers).unwrap();
+        let quorum: u32 = env.storage().instance().get(&DataKey::Quorum).unwrap();
+        let remaining = approvers.len() as u32 - proposal.approvals - proposal.rejections;
+        if proposal.approvals + remaining < quorum {
+            proposal.status = TxStatus::Rejected;
+        }
+        env.storage().persistent().set(&DataKey::QuorumProposal(id), &proposal);
+    }
+
+    /// Read a quorum-change proposal.
+    pub fn get_quorum_proposal(env: Env, id: u64) -> QuorumChangeProposal {
+        env.storage().persistent().get(&DataKey::QuorumProposal(id))
+            .expect("quorum proposal not found")
+    }
+
     // --- helpers ---
 
     fn assert_is_approver(env: &Env, addr: &Address) {
@@ -142,6 +231,14 @@ impl MultisigContract {
     fn get_pending(env: &Env, tx_id: u64) -> Proposal {
         let proposal: Proposal = env.storage().persistent().get(&DataKey::Proposal(tx_id))
             .expect("proposal not found");
+        assert!(proposal.status == TxStatus::Pending, "not pending");
+        assert!(env.ledger().timestamp() < proposal.expires_at, "proposal expired");
+        proposal
+    }
+
+    fn get_pending_quorum(env: &Env, id: u64) -> QuorumChangeProposal {
+        let proposal: QuorumChangeProposal = env.storage().persistent().get(&DataKey::QuorumProposal(id))
+            .expect("quorum proposal not found");
         assert!(proposal.status == TxStatus::Pending, "not pending");
         assert!(env.ledger().timestamp() < proposal.expires_at, "proposal expired");
         proposal

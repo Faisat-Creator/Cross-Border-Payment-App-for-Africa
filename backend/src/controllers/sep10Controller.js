@@ -30,14 +30,12 @@ async function postChallenge(req, res, next) {
 
     // Extract account from transaction
     const StellarSDK = require('@stellar/stellar-sdk');
-    const tx = StellarSDK.TransactionEnvelope.fromXDR(
-      transaction,
-      process.env.STELLAR_NETWORK === 'mainnet'
-        ? StellarSDK.Networks.PUBLIC_NETWORK_PASSPHRASE
-        : StellarSDK.Networks.TESTNET_NETWORK_PASSPHRASE
-    );
+    const passphrase = process.env.STELLAR_NETWORK === 'mainnet'
+      ? StellarSDK.Networks.PUBLIC
+      : StellarSDK.Networks.TESTNET;
+    const tx = StellarSDK.TransactionBuilder.fromXDR(transaction, passphrase);
 
-    const account = tx.transaction().source.accountId();
+    const account = tx.source;
 
     // Verify the challenge
     const isValid = verifyChallenge(account, transaction);

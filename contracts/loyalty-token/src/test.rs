@@ -1,18 +1,23 @@
 #![cfg(test)]
 
-use soroban_sdk::{testutils::Address as _, Address, Env};
+use soroban_sdk::{testutils::{Address as _, Ledger}, Address, Env};
 
 use crate::{LoyaltyTokenContract, LoyaltyTokenContractClient};
 
 // ── Helpers ───────────────────────────────────────────────────────────────────
 
+const DEFAULT_MAX_SUPPLY: i128 = 1_000_000_000;
+const BASE_TIMESTAMP: u64 = 1_000_000;
+const FAR_FUTURE: u64 = 9_999_999_999;
+
 fn setup() -> (Env, LoyaltyTokenContractClient<'static>, Address) {
     let env = Env::default();
     env.mock_all_auths();
+    env.ledger().with_mut(|l| l.timestamp = BASE_TIMESTAMP);
     let contract_id = env.register_contract(None, LoyaltyTokenContract);
     let client = LoyaltyTokenContractClient::new(&env, &contract_id);
     let admin = Address::generate(&env);
-    client.initialize(&admin);
+    client.initialize(&admin, &DEFAULT_MAX_SUPPLY);
     (env, client, admin)
 }
 
@@ -28,7 +33,24 @@ fn test_initialize_sets_zero_supply() {
 #[should_panic(expected = "already initialized")]
 fn test_double_initialize_panics() {
     let (_, client, admin) = setup();
-    client.initialize(&admin);
+    client.initialize(&admin, &DEFAULT_MAX_SUPPLY);
+}
+
+#[test]
+#[should_panic(expected = "max_supply must be positive")]
+fn test_initialize_zero_max_supply_panics() {
+    let env = Env::default();
+    env.mock_all_auths();
+    let contract_id = env.register_contract(None, LoyaltyTokenContract);
+    let client = LoyaltyTokenContractClient::new(&env, &contract_id);
+    let admin = Address::generate(&env);
+    client.initialize(&admin, &0);
+}
+
+#[test]
+fn test_initialize_stores_max_supply() {
+    let (_, client, _) = setup();
+    assert_eq!(client.max_supply(), DEFAULT_MAX_SUPPLY);
 }
 
 // ── metadata ──────────────────────────────────────────────────────────────────
@@ -115,6 +137,47 @@ fn test_mint_negative_amount_panics() {
     client.mint(&admin, &user, &-1);
 }
 
+#[test]
+fn test_mint_exactly_to_cap_succeeds() {
+    let env = Env::default();
+    env.mock_all_auths();
+    let contract_id = env.register_contract(None, LoyaltyTokenContract);
+    let client = LoyaltyTokenContractClient::new(&env, &contract_id);
+    let admin = Address::generate(&env);
+    let user = Address::generate(&env);
+    client.initialize(&admin, &500);
+    client.mint(&admin, &user, &500);
+    assert_eq!(client.total_supply(), 500);
+    assert_eq!(client.balance(&user), 500);
+}
+
+#[test]
+#[should_panic(expected = "minting would exceed max supply")]
+fn test_mint_exceeds_cap_panics() {
+    let env = Env::default();
+    env.mock_all_auths();
+    let contract_id = env.register_contract(None, LoyaltyTokenContract);
+    let client = LoyaltyTokenContractClient::new(&env, &contract_id);
+    let admin = Address::generate(&env);
+    let user = Address::generate(&env);
+    client.initialize(&admin, &100);
+    client.mint(&admin, &user, &101);
+}
+
+#[test]
+#[should_panic(expected = "minting would exceed max supply")]
+fn test_mint_cumulative_exceeds_cap_panics() {
+    let env = Env::default();
+    env.mock_all_auths();
+    let contract_id = env.register_contract(None, LoyaltyTokenContract);
+    let client = LoyaltyTokenContractClient::new(&env, &contract_id);
+    let admin = Address::generate(&env);
+    let user = Address::generate(&env);
+    client.initialize(&admin, &100);
+    client.mint(&admin, &user, &60);
+    client.mint(&admin, &user, &41); // 60 + 41 = 101 > 100
+}
+
 // ── burn ──────────────────────────────────────────────────────────────────────
 
 #[test]
@@ -187,7 +250,7 @@ fn test_approve_sets_allowance() {
     let owner = Address::generate(&env);
     let spender = Address::generate(&env);
     client.mint(&admin, &owner, &100);
-    client.approve(&owner, &spender, &50);
+    client.approve(&owner, &spender, &50, &FAR_FUTURE);
     assert_eq!(client.allowance(&owner, &spender), 50);
 }
 
@@ -198,7 +261,7 @@ fn test_transfer_from_uses_allowance() {
     let spender = Address::generate(&env);
     let receiver = Address::generate(&env);
     client.mint(&admin, &owner, &100);
-    client.approve(&owner, &spender, &40);
+    client.approve(&owner, &spender, &40, &FAR_FUTURE);
     client.transfer_from(&spender, &owner, &receiver, &40);
     assert_eq!(client.balance(&owner), 60);
     assert_eq!(client.balance(&receiver), 40);
@@ -213,7 +276,7 @@ fn test_transfer_from_exceeds_allowance_panics() {
     let spender = Address::generate(&env);
     let receiver = Address::generate(&env);
     client.mint(&admin, &owner, &100);
-    client.approve(&owner, &spender, &10);
+    client.approve(&owner, &spender, &10, &FAR_FUTURE);
     client.transfer_from(&spender, &owner, &receiver, &11);
 }
 
@@ -223,7 +286,7 @@ fn test_burn_from_uses_allowance() {
     let owner = Address::generate(&env);
     let spender = Address::generate(&env);
     client.mint(&admin, &owner, &100);
-    client.approve(&owner, &spender, &30);
+    client.approve(&owner, &spender, &30, &FAR_FUTURE);
     client.burn_from(&spender, &owner, &30);
     assert_eq!(client.balance(&owner), 70);
     assert_eq!(client.total_supply(), 70);
@@ -237,8 +300,60 @@ fn test_burn_from_exceeds_allowance_panics() {
     let owner = Address::generate(&env);
     let spender = Address::generate(&env);
     client.mint(&admin, &owner, &100);
-    client.approve(&owner, &spender, &5);
+    client.approve(&owner, &spender, &5, &FAR_FUTURE);
     client.burn_from(&spender, &owner, &6);
+}
+
+// ── allowance expiry ──────────────────────────────────────────────────────────
+
+#[test]
+fn test_allowance_returns_zero_after_expiry() {
+    let (env, client, admin) = setup();
+    let owner = Address::generate(&env);
+    let spender = Address::generate(&env);
+    client.mint(&admin, &owner, &100);
+    // approve with expiry 1 second in the future from BASE_TIMESTAMP
+    client.approve(&owner, &spender, &50, &(BASE_TIMESTAMP + 1));
+    assert_eq!(client.allowance(&owner, &spender), 50);
+    // advance past expiry
+    env.ledger().with_mut(|l| l.timestamp = BASE_TIMESTAMP + 2);
+    assert_eq!(client.allowance(&owner, &spender), 0);
+}
+
+#[test]
+#[should_panic(expected = "allowance expired")]
+fn test_transfer_from_expired_allowance_panics() {
+    let (env, client, admin) = setup();
+    let owner = Address::generate(&env);
+    let spender = Address::generate(&env);
+    let receiver = Address::generate(&env);
+    client.mint(&admin, &owner, &100);
+    client.approve(&owner, &spender, &50, &(BASE_TIMESTAMP + 1));
+    env.ledger().with_mut(|l| l.timestamp = BASE_TIMESTAMP + 2);
+    client.transfer_from(&spender, &owner, &receiver, &10);
+}
+
+#[test]
+#[should_panic(expected = "allowance expired")]
+fn test_burn_from_expired_allowance_panics() {
+    let (env, client, admin) = setup();
+    let owner = Address::generate(&env);
+    let spender = Address::generate(&env);
+    client.mint(&admin, &owner, &100);
+    client.approve(&owner, &spender, &50, &(BASE_TIMESTAMP + 1));
+    env.ledger().with_mut(|l| l.timestamp = BASE_TIMESTAMP + 2);
+    client.burn_from(&spender, &owner, &10);
+}
+
+#[test]
+#[should_panic(expected = "expires_at must be in the future")]
+fn test_approve_past_expiry_panics() {
+    let (env, client, admin) = setup();
+    let owner = Address::generate(&env);
+    let spender = Address::generate(&env);
+    client.mint(&admin, &owner, &100);
+    // BASE_TIMESTAMP - 1 is in the past
+    client.approve(&owner, &spender, &50, &(BASE_TIMESTAMP - 1));
 }
 
 // ── redeem ────────────────────────────────────────────────────────────────────

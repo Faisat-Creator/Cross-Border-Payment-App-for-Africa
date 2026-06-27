@@ -71,3 +71,23 @@ async function awardReferralCredit(referredUserId) {
 }
 
 module.exports = { getStats, awardReferralCredit };
+
+/**
+ * POST /api/referrals/award
+ * Admin/internal endpoint — awards referral credit for a given referred user.
+ * Body: { referred_user_id: string }
+ */
+async function awardReferralCreditHandler(req, res, next) {
+  try {
+    const { referred_user_id } = req.body;
+    if (!referred_user_id) {
+      return res.status(400).json({ error: 'referred_user_id is required' });
+    }
+    await awardReferralCredit(referred_user_id);
+    res.json({ success: true });
+  } catch (err) {
+    next(err);
+  }
+}
+
+module.exports = { getStats, awardReferralCredit, awardReferralCreditHandler };

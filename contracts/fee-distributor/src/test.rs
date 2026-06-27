@@ -1,12 +1,12 @@
 #![cfg(test)]
 
 use soroban_sdk::{
-    testutils::Address as _,
+    testutils::{Address as _, Events, Ledger},
     token::{Client as TokenClient, StellarAssetClient},
-    Address, Env,
+    Address, Env, IntoVal, Symbol, Val,
 };
 
-use crate::{FeeDistributorContract, FeeDistributorContractClient};
+use crate::{EvtFeeDeposited, EvtFeesWithdrawn, FeeDistributorContract, FeeDistributorContractClient};
 
 // ── Helpers ───────────────────────────────────────────────────────────────────
 
@@ -47,7 +47,7 @@ fn test_deposit_fee_increments_total() {
     let (env, client, _, usdc_id) = setup();
     let depositor = Address::generate(&env);
     mint(&env, &usdc_id, &depositor, 1_000_0000000);
-    client.deposit_fee(&depositor, &500_0000000);
+    client.deposit_fee(&depositor, &500_0000000, &None);
     assert_eq!(client.get_accumulated_fees(), 500_0000000);
 }
 
@@ -56,7 +56,7 @@ fn test_deposit_fee_transfers_usdc_to_contract() {
     let (env, client, _, usdc_id) = setup();
     let depositor = Address::generate(&env);
     mint(&env, &usdc_id, &depositor, 1_000_0000000);
-    client.deposit_fee(&depositor, &1_000_0000000);
+    client.deposit_fee(&depositor, &1_000_0000000, &None);
     assert_eq!(TokenClient::new(&env, &usdc_id).balance(&depositor), 0);
 }
 
@@ -67,8 +67,8 @@ fn test_multiple_deposits_accumulate() {
     let d2 = Address::generate(&env);
     mint(&env, &usdc_id, &d1, 300_0000000);
     mint(&env, &usdc_id, &d2, 200_0000000);
-    client.deposit_fee(&d1, &300_0000000);
-    client.deposit_fee(&d2, &200_0000000);
+    client.deposit_fee(&d1, &300_0000000, &None);
+    client.deposit_fee(&d2, &200_0000000, &None);
     assert_eq!(client.get_accumulated_fees(), 500_0000000);
 }
 
@@ -77,7 +77,7 @@ fn test_deposit_fee_minimum_amount() {
     let (env, client, _, usdc_id) = setup();
     let depositor = Address::generate(&env);
     mint(&env, &usdc_id, &depositor, 1);
-    client.deposit_fee(&depositor, &1);
+    client.deposit_fee(&depositor, &1, &None);
     assert_eq!(client.get_accumulated_fees(), 1);
 }
 
@@ -86,7 +86,7 @@ fn test_deposit_fee_minimum_amount() {
 fn test_deposit_fee_zero_panics() {
     let (env, client, _, _) = setup();
     let depositor = Address::generate(&env);
-    client.deposit_fee(&depositor, &0);
+    client.deposit_fee(&depositor, &0, &None);
 }
 
 #[test]
@@ -94,7 +94,50 @@ fn test_deposit_fee_zero_panics() {
 fn test_deposit_fee_negative_panics() {
     let (env, client, _, _) = setup();
     let depositor = Address::generate(&env);
-    client.deposit_fee(&depositor, &-1);
+    client.deposit_fee(&depositor, &-1, &None);
+}
+
+// ── #557: deposit source tracking ─────────────────────────────────────────────
+
+#[test]
+fn test_deposit_fee_with_source_emits_event() {
+    let (env, client, _, usdc_id) = setup();
+    let depositor = Address::generate(&env);
+    let source = Address::generate(&env);
+    mint(&env, &usdc_id, &depositor, 500_0000000);
+    client.deposit_fee(&depositor, &500_0000000, &Some(source.clone()));
+
+    let event_name: Val = Symbol::new(&env, "FeeDeposited").into_val(&env);
+    let events = env.events().all();
+    let deposit_event = events.iter().find(|(_, topics, _)| {
+        topics.iter().any(|t| t == &event_name)
+    });
+    assert!(deposit_event.is_some(), "FeeDeposited event not emitted");
+
+    let (_, _, data) = deposit_event.unwrap();
+    let payload: EvtFeeDeposited = soroban_sdk::from_val(&env, data);
+    assert_eq!(payload.depositor, depositor);
+    assert_eq!(payload.amount, 500_0000000);
+    assert_eq!(payload.source, Some(source));
+}
+
+#[test]
+fn test_deposit_fee_without_source_has_none() {
+    let (env, client, _, usdc_id) = setup();
+    let depositor = Address::generate(&env);
+    mint(&env, &usdc_id, &depositor, 100_0000000);
+    client.deposit_fee(&depositor, &100_0000000, &None);
+
+    let event_name: Val = Symbol::new(&env, "FeeDeposited").into_val(&env);
+    let events = env.events().all();
+    let deposit_event = events.iter().find(|(_, topics, _)| {
+        topics.iter().any(|t| t == &event_name)
+    });
+    assert!(deposit_event.is_some());
+
+    let (_, _, data) = deposit_event.unwrap();
+    let payload: EvtFeeDeposited = soroban_sdk::from_val(&env, data);
+    assert_eq!(payload.source, None);
 }
 
 // ── withdraw_fees ─────────────────────────────────────────────────────────────
@@ -104,7 +147,7 @@ fn test_withdraw_fees_transfers_to_admin() {
     let (env, client, admin, usdc_id) = setup();
     let depositor = Address::generate(&env);
     mint(&env, &usdc_id, &depositor, 1_000_0000000);
-    client.deposit_fee(&depositor, &1_000_0000000);
+    client.deposit_fee(&depositor, &1_000_0000000, &None);
 
     client.withdraw_fees(&admin, &1_000_0000000);
 
@@ -117,7 +160,7 @@ fn test_withdraw_fees_partial() {
     let (env, client, admin, usdc_id) = setup();
     let depositor = Address::generate(&env);
     mint(&env, &usdc_id, &depositor, 1_000_0000000);
-    client.deposit_fee(&depositor, &1_000_0000000);
+    client.deposit_fee(&depositor, &1_000_0000000, &None);
 
     client.withdraw_fees(&admin, &400_0000000);
 
@@ -130,7 +173,7 @@ fn test_withdraw_fees_multiple_times() {
     let (env, client, admin, usdc_id) = setup();
     let depositor = Address::generate(&env);
     mint(&env, &usdc_id, &depositor, 1_000_0000000);
-    client.deposit_fee(&depositor, &1_000_0000000);
+    client.deposit_fee(&depositor, &1_000_0000000, &None);
 
     client.withdraw_fees(&admin, &300_0000000);
     client.withdraw_fees(&admin, &300_0000000);
@@ -144,7 +187,7 @@ fn test_withdraw_fees_non_admin_panics() {
     let (env, client, _, usdc_id) = setup();
     let depositor = Address::generate(&env);
     mint(&env, &usdc_id, &depositor, 500_0000000);
-    client.deposit_fee(&depositor, &500_0000000);
+    client.deposit_fee(&depositor, &500_0000000, &None);
     let impostor = Address::generate(&env);
     client.withdraw_fees(&impostor, &100_0000000);
 }
@@ -155,7 +198,7 @@ fn test_withdraw_fees_exceeds_balance_panics() {
     let (env, client, admin, usdc_id) = setup();
     let depositor = Address::generate(&env);
     mint(&env, &usdc_id, &depositor, 100_0000000);
-    client.deposit_fee(&depositor, &100_0000000);
+    client.deposit_fee(&depositor, &100_0000000, &None);
     client.withdraw_fees(&admin, &100_0000001);
 }
 
@@ -173,6 +216,34 @@ fn test_withdraw_fees_zero_panics() {
     client.withdraw_fees(&admin, &0);
 }
 
+// ── #556: withdrawal history event includes timestamp ─────────────────────────
+
+#[test]
+fn test_withdraw_fees_event_includes_admin_amount_and_timestamp() {
+    let (env, client, admin, usdc_id) = setup();
+    let depositor = Address::generate(&env);
+    mint(&env, &usdc_id, &depositor, 1_000_0000000);
+    client.deposit_fee(&depositor, &1_000_0000000, &None);
+
+    let withdraw_at: u64 = 99_999;
+    env.ledger().with_mut(|li| li.timestamp = withdraw_at);
+    client.withdraw_fees(&admin, &1_000_0000000);
+
+    let event_name: Val = Symbol::new(&env, "FeesWithdrawn").into_val(&env);
+    let events = env.events().all();
+    let withdrawal_event = events.iter().find(|(_, topics, _)| {
+        topics.iter().any(|t| t == &event_name)
+    });
+    assert!(withdrawal_event.is_some(), "FeesWithdrawn event not emitted");
+
+    let (_, _, data) = withdrawal_event.unwrap();
+    let payload: EvtFeesWithdrawn = soroban_sdk::from_val(&env, data);
+    assert_eq!(payload.admin, admin);
+    assert_eq!(payload.amount, 1_000_0000000);
+    assert_eq!(payload.remaining, 0);
+    assert_eq!(payload.timestamp, withdraw_at);
+}
+
 // ── get_accumulated_fees ──────────────────────────────────────────────────────
 
 #[test]
@@ -181,12 +252,12 @@ fn test_get_accumulated_fees_reflects_deposits_and_withdrawals() {
     let depositor = Address::generate(&env);
     mint(&env, &usdc_id, &depositor, 1_000_0000000);
 
-    client.deposit_fee(&depositor, &600_0000000);
+    client.deposit_fee(&depositor, &600_0000000, &None);
     assert_eq!(client.get_accumulated_fees(), 600_0000000);
 
     client.withdraw_fees(&admin, &200_0000000);
     assert_eq!(client.get_accumulated_fees(), 400_0000000);
 
-    client.deposit_fee(&depositor, &400_0000000);
+    client.deposit_fee(&depositor, &400_0000000, &None);
     assert_eq!(client.get_accumulated_fees(), 800_0000000);
 }

@@ -24,7 +24,8 @@ fn setup(quorum: u32, n_approvers: usize) -> (Env, Address, soroban_sdk::Vec<Add
 fn propose(env: &Env, contract_id: &Address, proposer: &Address) -> u64 {
     let client = MultisigContractClient::new(env, contract_id);
     let recipient = Address::generate(env);
-    client.propose_transaction(proposer, &1_000_000, &recipient)
+    let desc = soroban_sdk::String::from_str(env, "Test payment");
+    client.propose_transaction(proposer, &desc, &1_000_000, &recipient)
 }
 
 // ── initialization ────────────────────────────────────────────────────────────
@@ -97,7 +98,8 @@ fn test_propose_non_approver_panics() {
 fn test_propose_zero_amount_panics() {
     let (env, contract_id, approvers, _) = setup(2, 3);
     let client = MultisigContractClient::new(&env, &contract_id);
-    client.propose_transaction(&approvers.get(0).unwrap(), &0, &Address::generate(&env));
+    let desc = soroban_sdk::String::from_str(&env, "Zero amount");
+    client.propose_transaction(&approvers.get(0).unwrap(), &desc, &0, &Address::generate(&env));
 }
 
 // ── approve / quorum ──────────────────────────────────────────────────────────
@@ -282,11 +284,13 @@ fn test_proposal_fields_correct() {
     let client = MultisigContractClient::new(&env, &contract_id);
     let proposer = approvers.get(0).unwrap();
     let recipient = Address::generate(&env);
-    let tx_id = client.propose_transaction(&proposer, &500_000, &recipient);
+    let desc = soroban_sdk::String::from_str(&env, "Send funds to recipient");
+    let tx_id = client.propose_transaction(&proposer, &desc, &500_000, &recipient);
     let p = client.get_proposal(&tx_id);
     assert_eq!(p.amount, 500_000);
     assert_eq!(p.recipient, recipient);
     assert_eq!(p.proposer, proposer);
+    assert_eq!(p.description, desc);
     assert_eq!(p.approvals, 0);
     assert_eq!(p.rejections, 0);
     assert_eq!(p.status, TxStatus::Pending);
@@ -309,4 +313,162 @@ fn test_mixed_votes_pending_until_decided() {
     // third approval reaches quorum
     client.approve(&approvers.get(3).unwrap(), &tx_id);
     assert_eq!(client.get_proposal(&tx_id).status, TxStatus::Executed);
+}
+
+// ── quorum change ─────────────────────────────────────────────────────────────
+
+#[test]
+fn test_propose_quorum_change_increments_counter() {
+    let (env, contract_id, approvers, _) = setup(2, 3);
+    let client = MultisigContractClient::new(&env, &contract_id);
+    let proposer = approvers.get(0).unwrap();
+    let id0 = client.propose_quorum_change(&proposer, &3);
+    let id1 = client.propose_quorum_change(&proposer, &1);
+    assert_eq!(id0, 0);
+    assert_eq!(id1, 1);
+}
+
+#[test]
+fn test_get_quorum_proposal_fields_correct() {
+    let (env, contract_id, approvers, _) = setup(2, 3);
+    let client = MultisigContractClient::new(&env, &contract_id);
+    let proposer = approvers.get(0).unwrap();
+    let id = client.propose_quorum_change(&proposer, &3);
+    let p = client.get_quorum_proposal(&id);
+    assert_eq!(p.new_quorum, 3);
+    assert_eq!(p.proposer, proposer);
+    assert_eq!(p.approvals, 0);
+    assert_eq!(p.rejections, 0);
+    assert_eq!(p.status, TxStatus::Pending);
+}
+
+#[test]
+#[should_panic(expected = "not an approver")]
+fn test_propose_quorum_change_non_approver_panics() {
+    let (env, contract_id, _, _) = setup(2, 3);
+    let client = MultisigContractClient::new(&env, &contract_id);
+    client.propose_quorum_change(&Address::generate(&env), &2);
+}
+
+#[test]
+#[should_panic(expected = "invalid quorum")]
+fn test_propose_quorum_change_zero_panics() {
+    let (env, contract_id, approvers, _) = setup(2, 3);
+    let client = MultisigContractClient::new(&env, &contract_id);
+    client.propose_quorum_change(&approvers.get(0).unwrap(), &0);
+}
+
+#[test]
+#[should_panic(expected = "invalid quorum")]
+fn test_propose_quorum_change_exceeds_approvers_panics() {
+    let (env, contract_id, approvers, _) = setup(2, 3);
+    let client = MultisigContractClient::new(&env, &contract_id);
+    // 3 approvers, requesting quorum of 4
+    client.propose_quorum_change(&approvers.get(0).unwrap(), &4);
+}
+
+#[test]
+fn test_approve_quorum_change_reaches_quorum_updates_quorum() {
+    // current quorum 2, 3 approvers. propose quorum → 3, need 2 approvals.
+    let (env, contract_id, approvers, _) = setup(2, 3);
+    let client = MultisigContractClient::new(&env, &contract_id);
+    let id = client.propose_quorum_change(&approvers.get(0).unwrap(), &3);
+
+    client.approve_quorum_change(&approvers.get(0).unwrap(), &id);
+    assert_eq!(client.get_quorum_proposal(&id).status, TxStatus::Pending);
+
+    client.approve_quorum_change(&approvers.get(1).unwrap(), &id);
+    let p = client.get_quorum_proposal(&id);
+    assert_eq!(p.status, TxStatus::Executed);
+
+    // new quorum takes effect: a tx now needs 3 approvals
+    let tx_id = propose(&env, &contract_id, &approvers.get(0).unwrap());
+    client.approve(&approvers.get(0).unwrap(), &tx_id);
+    client.approve(&approvers.get(1).unwrap(), &tx_id);
+    assert_eq!(client.get_proposal(&tx_id).status, TxStatus::Pending);
+    client.approve(&approvers.get(2).unwrap(), &tx_id);
+    assert_eq!(client.get_proposal(&tx_id).status, TxStatus::Executed);
+}
+
+#[test]
+#[should_panic(expected = "already voted")]
+fn test_double_approve_quorum_change_panics() {
+    let (env, contract_id, approvers, _) = setup(2, 3);
+    let client = MultisigContractClient::new(&env, &contract_id);
+    let id = client.propose_quorum_change(&approvers.get(0).unwrap(), &3);
+    let approver = approvers.get(0).unwrap();
+    client.approve_quorum_change(&approver, &id);
+    client.approve_quorum_change(&approver, &id);
+}
+
+#[test]
+#[should_panic(expected = "not an approver")]
+fn test_approve_quorum_change_non_approver_panics() {
+    let (env, contract_id, approvers, _) = setup(2, 3);
+    let client = MultisigContractClient::new(&env, &contract_id);
+    let id = client.propose_quorum_change(&approvers.get(0).unwrap(), &3);
+    client.approve_quorum_change(&Address::generate(&env), &id);
+}
+
+#[test]
+fn test_reject_quorum_change_makes_quorum_impossible() {
+    // 3 approvers, quorum 2. 2 rejections → remaining 1 can't reach quorum of 2.
+    let (env, contract_id, approvers, _) = setup(2, 3);
+    let client = MultisigContractClient::new(&env, &contract_id);
+    let id = client.propose_quorum_change(&approvers.get(0).unwrap(), &1);
+
+    client.reject_quorum_change(&approvers.get(0).unwrap(), &id);
+    assert_eq!(client.get_quorum_proposal(&id).status, TxStatus::Pending);
+
+    client.reject_quorum_change(&approvers.get(1).unwrap(), &id);
+    assert_eq!(client.get_quorum_proposal(&id).status, TxStatus::Rejected);
+}
+
+#[test]
+#[should_panic(expected = "already voted")]
+fn test_double_reject_quorum_change_panics() {
+    let (env, contract_id, approvers, _) = setup(2, 3);
+    let client = MultisigContractClient::new(&env, &contract_id);
+    let id = client.propose_quorum_change(&approvers.get(0).unwrap(), &3);
+    let approver = approvers.get(0).unwrap();
+    client.reject_quorum_change(&approver, &id);
+    client.reject_quorum_change(&approver, &id);
+}
+
+#[test]
+#[should_panic(expected = "already voted")]
+fn test_approve_then_reject_quorum_change_same_voter_panics() {
+    let (env, contract_id, approvers, _) = setup(2, 3);
+    let client = MultisigContractClient::new(&env, &contract_id);
+    let id = client.propose_quorum_change(&approvers.get(0).unwrap(), &3);
+    let approver = approvers.get(0).unwrap();
+    client.approve_quorum_change(&approver, &id);
+    client.reject_quorum_change(&approver, &id);
+}
+
+#[test]
+#[should_panic(expected = "quorum proposal not found")]
+fn test_get_nonexistent_quorum_proposal_panics() {
+    let (env, contract_id, _, _) = setup(2, 3);
+    MultisigContractClient::new(&env, &contract_id).get_quorum_proposal(&99);
+}
+
+#[test]
+#[should_panic(expected = "proposal expired")]
+fn test_approve_quorum_change_after_expiry_panics() {
+    let (env, contract_id, approvers, _) = setup(2, 3);
+    let client = MultisigContractClient::new(&env, &contract_id);
+    let id = client.propose_quorum_change(&approvers.get(0).unwrap(), &3);
+    env.ledger().with_mut(|l| l.timestamp += 86_401);
+    client.approve_quorum_change(&approvers.get(0).unwrap(), &id);
+}
+
+#[test]
+#[should_panic(expected = "proposal expired")]
+fn test_reject_quorum_change_after_expiry_panics() {
+    let (env, contract_id, approvers, _) = setup(2, 3);
+    let client = MultisigContractClient::new(&env, &contract_id);
+    let id = client.propose_quorum_change(&approvers.get(0).unwrap(), &3);
+    env.ledger().with_mut(|l| l.timestamp += 86_401);
+    client.reject_quorum_change(&approvers.get(0).unwrap(), &id);
 }

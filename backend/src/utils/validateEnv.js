@@ -55,6 +55,12 @@ function validateEnv() {
     );
   }
 
+  if (!isSet(process.env.AFRI_ISSUER_PUBLIC) || !isSet(process.env.AFRI_ISSUER_SECRET)) {
+    console.warn(
+      '\x1b[33m[CONFIG WARNING] AFRI_ISSUER_PUBLIC and/or AFRI_ISSUER_SECRET are not set. POST /api/assets/issue will be unavailable.\x1b[0m'
+    );
+  }
+
   const network = process.env.STELLAR_NETWORK.trim();
   const horizonUrl = process.env.STELLAR_HORIZON_URL.trim().replace(/\/$/, '');
   const expectedHorizon = EXPECTED_HORIZON_URLS[network];

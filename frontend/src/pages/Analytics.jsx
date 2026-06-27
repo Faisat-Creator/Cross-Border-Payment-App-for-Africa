@@ -14,7 +14,7 @@ export default function Analytics() {
   useEffect(() => {
     const fetchAnalytics = async () => {
       try {
-        const res = await api.get('/analytics/summary');
+        const res = await api.get('/payments/analytics');
         setData(res.data);
       } catch (err) {
         toast.error(t('analytics.error') || 'Failed to load analytics');

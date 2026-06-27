@@ -1,8 +1,9 @@
-import React, { useState } from 'react';
+import React, { useState, useRef } from 'react';
 import { useNavigate, Link } from 'react-router-dom';
+import toast from 'react-hot-toast';
+import { useTranslation } from 'react-i18next';
 import {
   LogOut,
-  User,
   Mail,
   Phone,
   Wallet,
@@ -22,12 +23,16 @@ import {
   Shield,
   Key,
   AlertCircle,
+  Monitor,
+  Link2,
+  Calendar,
+  Webhook,
+  Camera,
 } from 'lucide-react';
-import { useAuth } from '../context/AuthContext';
+import { useAuth, tokenStore } from '../context/AuthContext';
 import { truncateAddress } from '../utils/currency';
 import api from '../utils/api';
-import toast from 'react-hot-toast';
-import { useTranslation } from 'react-i18next';
+import AvatarCrop from '../components/AvatarCrop';
 
 const LANGUAGES = [
   { code: 'en', label: 'English' },
@@ -38,10 +43,36 @@ const LANGUAGES = [
 ];
 
 export default function Profile() {
-  const { user, logout } = useAuth();
+  const { user, logout, updateUser } = useAuth();
   const navigate = useNavigate();
   const { t, i18n } = useTranslation();
   const [copied, setCopied] = useState(false);
+
+  // Avatar upload state
+  const fileInputRef = useRef(null);
+  const [cropFile, setCropFile] = useState(null); // File selected for cropping
+
+  const handleAvatarClick = () => fileInputRef.current?.click();
+  const handleFileChange = (e) => {
+    const file = e.target.files?.[0];
+    if (!file) return;
+    if (file.size > 5 * 1024 * 1024) {
+      toast.error('File too large. Maximum size is 5 MB.');
+      return;
+    }
+    if (!/^image\/(jpeg|jpg|png|webp)$/.test(file.type)) {
+      toast.error('Only JPEG, PNG, and WebP files are accepted.');
+      return;
+    }
+    setCropFile(file);
+    // Reset input so same file can be selected again
+    e.target.value = '';
+  };
+  const handleCropSuccess = (avatarUrl) => {
+    updateUser({ avatar_url: avatarUrl });
+    setCropFile(null);
+    toast.success('Profile photo updated');
+  };
   const [contacts, setContacts] = useState([]);
   const [contactsLoading, setContactsLoading] = useState(true);
   const [showAddContact, setShowAddContact] = useState(false);
@@ -79,6 +110,18 @@ export default function Profile() {
   const [changeEmailForm, setChangeEmailForm] = useState({ new_email: '', password: '' });
   const [changeEmailLoading, setChangeEmailLoading] = useState(false);
 
+  // Support tickets state (issue #481)
+  const [showSupportForm, setShowSupportForm] = useState(false);
+  const [supportForm, setSupportForm] = useState({ type: '', description: '', transaction_id: '' });
+  const [supportLoading, setSupportLoading] = useState(false);
+  const [tickets, setTickets] = useState([]);
+  const [ticketsLoading, setTicketsLoading] = useState(true);
+
+  // Loyalty points state (issue #480)
+  const [loyaltyBalance, setLoyaltyBalance] = useState(null);
+  const [loyaltyLoading, setLoyaltyLoading] = useState(true);
+  const [redeemLoading, setRedeemLoading] = useState(false);
+
   const handleChangeEmail = async (e) => {
     e.preventDefault();
     setChangeEmailLoading(true);
@@ -91,6 +134,39 @@ export default function Profile() {
       toast.error(err.response?.data?.error || 'Failed to request email change');
     } finally {
       setChangeEmailLoading(false);
+    }
+  };
+
+  const handleSubmitSupport = async (e) => {
+    e.preventDefault();
+    setSupportLoading(true);
+    try {
+      await api.post('/support/tickets', supportForm);
+      toast.success('Support ticket created successfully');
+      setShowSupportForm(false);
+      setSupportForm({ type: '', description: '', transaction_id: '' });
+      // Refresh tickets list
+      const res = await api.get('/support/tickets');
+      setTickets(res.data.tickets || []);
+    } catch (err) {
+      toast.error(err.response?.data?.error || 'Failed to create support ticket');
+    } finally {
+      setSupportLoading(false);
+    }
+  };
+
+  const handleRedeemLoyalty = async () => {
+    setRedeemLoading(true);
+    try {
+      await api.post('/loyalty/redeem');
+      toast.success('100 loyalty points redeemed for 50% fee discount');
+      // Refresh balance
+      const res = await api.get('/loyalty/balance');
+      setLoyaltyBalance(res.data.points || 0);
+    } catch (err) {
+      toast.error(err.response?.data?.error || 'Failed to redeem points');
+    } finally {
+      setRedeemLoading(false);
     }
   };
 
@@ -158,8 +234,7 @@ export default function Profile() {
       setTwoFAStep(null);
       setTwoFAData(null);
       setTwoFACode('');
-      // Update local user state
-      user.totp_enabled = true;
+      updateUser({ totp_enabled: true });
     } catch (err) {
       toast.error(err.response?.data?.error || 'Invalid code');
     } finally {
@@ -175,7 +250,7 @@ export default function Profile() {
       toast.success('2FA disabled');
       setTwoFAStep(null);
       setTwoFAPassword('');
-      user.totp_enabled = false;
+      updateUser({ totp_enabled: false });
     } catch (err) {
       toast.error(err.response?.data?.error || 'Failed to disable 2FA');
     } finally {
@@ -261,8 +336,30 @@ export default function Profile() {
         setActivityLoading(false);
       }
     };
+    const fetchTickets = async () => {
+      try {
+        const res = await api.get('/support/tickets');
+        setTickets(res.data.tickets || []);
+      } catch {
+        // non-critical, silently ignore
+      } finally {
+        setTicketsLoading(false);
+      }
+    };
+    const fetchLoyaltyBalance = async () => {
+      try {
+        const res = await api.get('/loyalty/balance');
+        setLoyaltyBalance(res.data.points || 0);
+      } catch {
+        // non-critical, silently ignore
+      } finally {
+        setLoyaltyLoading(false);
+      }
+    };
     fetchContacts();
     fetchActivity();
+    fetchTickets();
+    fetchLoyaltyBalance();
   }, []);
 
   const handleAddTrustline = async (e) => {
@@ -404,9 +501,35 @@ export default function Profile() {
       {/* User info card */}
       <div className="bg-gray-900 rounded-2xl p-5 space-y-4">
         <div className="flex items-center gap-4">
-          <div className="w-14 h-14 bg-primary-500 rounded-full flex items-center justify-center text-2xl font-bold text-white">
-            {user?.full_name?.[0]?.toUpperCase()}
-          </div>
+          {/* Avatar — clickable to upload a new photo */}
+          <button
+            type="button"
+            onClick={handleAvatarClick}
+            className="relative w-14 h-14 rounded-full overflow-hidden bg-primary-500 flex items-center justify-center text-2xl font-bold text-white shrink-0 group"
+            aria-label="Change profile photo"
+          >
+            {user?.avatar_url ? (
+              <img
+                src={user.avatar_url}
+                alt="Profile"
+                className="w-full h-full object-cover"
+              />
+            ) : (
+              <span>{user?.full_name?.[0]?.toUpperCase()}</span>
+            )}
+            {/* Camera overlay on hover */}
+            <span className="absolute inset-0 bg-black/50 flex items-center justify-center opacity-0 group-hover:opacity-100 transition-opacity">
+              <Camera size={18} className="text-white" />
+            </span>
+          </button>
+          {/* Hidden file input */}
+          <input
+            ref={fileInputRef}
+            type="file"
+            accept=".jpg,.jpeg,.png,.webp"
+            className="hidden"
+            onChange={handleFileChange}
+          />
           <div>
             <p className="font-semibold text-white text-lg">{user?.full_name}</p>
             <p className="text-gray-400 text-sm">{t('profile.member')}</p>
@@ -500,6 +623,129 @@ export default function Profile() {
         )}
       </div>
 
+      {/* Loyalty Points (issue #480) */}
+      <div className="bg-gray-900 rounded-2xl p-5">
+        <div className="flex items-center justify-between mb-1">
+          <div className="flex items-center gap-2">
+            <Gift size={16} className="text-primary-400" />
+            <h3 className="font-semibold text-white">Loyalty Points</h3>
+          </div>
+        </div>
+
+        {loyaltyLoading ? (
+          <p className="text-gray-500 text-sm mt-2">Loading…</p>
+        ) : (
+          <div className="mt-3 bg-gray-800 border border-gray-700 rounded-xl p-4">
+            <div className="flex items-center justify-between">
+              <div>
+                <p className="text-gray-300 font-semibold text-2xl">{loyaltyBalance || 0}</p>
+                <p className="text-gray-500 text-xs mt-1">Points available</p>
+              </div>
+              <button
+                onClick={handleRedeemLoyalty}
+                disabled={redeemLoading || (loyaltyBalance || 0) < 100}
+                className="bg-primary-500 hover:bg-primary-600 disabled:opacity-50 disabled:cursor-not-allowed text-white text-sm font-semibold px-4 py-2 rounded-xl transition-colors"
+              >
+                {redeemLoading ? 'Redeeming…' : 'Redeem 100'}
+              </button>
+            </div>
+            <p className="text-gray-500 text-xs mt-2">
+              Redeem 100 points for a 50% fee discount on your next transaction.
+            </p>
+          </div>
+        )}
+      </div>
+
+      {/* Support Tickets (issue #481) */}
+      <div className="bg-gray-900 rounded-2xl p-5">
+        <div className="flex items-center justify-between mb-4">
+          <div className="flex items-center gap-2">
+            <AlertCircle size={16} className="text-primary-400" />
+            <h3 className="font-semibold text-white">Support Tickets</h3>
+          </div>
+          <button
+            onClick={() => setShowSupportForm(!showSupportForm)}
+            className="text-primary-500 hover:text-primary-400 flex items-center gap-1 text-sm"
+          >
+            <Plus size={16} /> New Ticket
+          </button>
+        </div>
+
+        {showSupportForm && (
+          <form
+            onSubmit={handleSubmitSupport}
+            className="mb-4 space-y-3 bg-gray-800 rounded-xl p-4"
+          >
+            <select
+              required
+              value={supportForm.type}
+              onChange={(e) => setSupportForm({ ...supportForm, type: e.target.value })}
+              className="w-full bg-gray-700 border border-gray-600 rounded-lg px-3 py-2 text-white text-sm focus:outline-none focus:ring-1 focus:ring-primary-500"
+            >
+              <option value="">Select issue type</option>
+              <option value="wrong_address">Wrong address</option>
+              <option value="wrong_amount">Wrong amount</option>
+              <option value="failed_deducted">Failed but deducted</option>
+              <option value="other">Other</option>
+            </select>
+            <input
+              type="text"
+              placeholder="Transaction ID (optional)"
+              value={supportForm.transaction_id}
+              onChange={(e) => setSupportForm({ ...supportForm, transaction_id: e.target.value })}
+              className="w-full bg-gray-700 border border-gray-600 rounded-lg px-3 py-2 text-white text-sm placeholder-gray-500 focus:outline-none focus:ring-1 focus:ring-primary-500"
+            />
+            <textarea
+              required
+              placeholder="Describe your issue..."
+              value={supportForm.description}
+              onChange={(e) => setSupportForm({ ...supportForm, description: e.target.value })}
+              rows={3}
+              maxLength={2000}
+              className="w-full bg-gray-700 border border-gray-600 rounded-lg px-3 py-2 text-white text-sm placeholder-gray-500 focus:outline-none focus:ring-1 focus:ring-primary-500 resize-none"
+            />
+            <div className="flex gap-2">
+              <button
+                type="button"
+                onClick={() => setShowSupportForm(false)}
+                className="flex-1 bg-gray-600 hover:bg-gray-500 text-white text-sm py-2 rounded-lg transition-colors"
+              >
+                Cancel
+              </button>
+              <button
+                type="submit"
+                disabled={supportLoading}
+                className="flex-1 bg-primary-500 hover:bg-primary-600 disabled:opacity-50 text-white text-sm py-2 rounded-lg transition-colors"
+              >
+                {supportLoading ? 'Submitting…' : 'Submit'}
+              </button>
+            </div>
+          </form>
+        )}
+
+        {ticketsLoading ? (
+          <p className="text-gray-500 text-sm text-center py-4">Loading…</p>
+        ) : tickets.length === 0 ? (
+          <p className="text-gray-500 text-sm text-center py-4">No support tickets yet.</p>
+        ) : (
+          <div className="space-y-2">
+            {tickets.map((ticket) => (
+              <div key={ticket.id} className="bg-gray-800 rounded-xl px-3 py-2.5">
+                <div className="flex items-center justify-between mb-1">
+                  <span className="text-xs font-semibold text-white capitalize">
+                    {ticket.type.replace(/_/g, ' ')}
+                  </span>
+                  <span className="text-xs text-gray-500">
+                    {new Date(ticket.created_at).toLocaleDateString()}
+                  </span>
+                </div>
+                <p className="text-xs text-gray-400 line-clamp-2">{ticket.description}</p>
+              </div>
+            ))}
+          </div>
+        )}
+      </div>
+
       {/* Change Email */}
       <div className="bg-gray-900 rounded-2xl p-5">
         <div className="flex items-center justify-between mb-1">
@@ -584,6 +830,51 @@ export default function Profile() {
           <div>
             <p className="font-semibold text-white text-sm">Refer &amp; Earn</p>
             <p className="text-xs text-gray-400">Invite friends, earn fee credits</p>
+          </div>
+        </div>
+        <span className="text-gray-500 text-lg">›</span>
+      </Link>
+
+      {/* Request Money (#461) */}
+      <Link
+        to="/request"
+        className="bg-gray-900 rounded-2xl p-5 flex items-center justify-between hover:bg-gray-800 transition-colors"
+      >
+        <div className="flex items-center gap-3">
+          <Link2 size={20} className="text-primary-500" />
+          <div>
+            <p className="font-semibold text-white text-sm">Request Money</p>
+            <p className="text-xs text-gray-400">Create a shareable payment link</p>
+          </div>
+        </div>
+        <span className="text-gray-500 text-lg">›</span>
+      </Link>
+
+      {/* Scheduled Payments (#462) */}
+      <Link
+        to="/scheduled"
+        className="bg-gray-900 rounded-2xl p-5 flex items-center justify-between hover:bg-gray-800 transition-colors"
+      >
+        <div className="flex items-center gap-3">
+          <Calendar size={20} className="text-primary-500" />
+          <div>
+            <p className="font-semibold text-white text-sm">Scheduled Payments</p>
+            <p className="text-xs text-gray-400">View, create, and cancel recurring payments</p>
+          </div>
+        </div>
+        <span className="text-gray-500 text-lg">›</span>
+      </Link>
+
+      {/* Webhooks (#464) */}
+      <Link
+        to="/webhooks"
+        className="bg-gray-900 rounded-2xl p-5 flex items-center justify-between hover:bg-gray-800 transition-colors"
+      >
+        <div className="flex items-center gap-3">
+          <Webhook size={20} className="text-primary-500" />
+          <div>
+            <p className="font-semibold text-white text-sm">Webhooks</p>
+            <p className="text-xs text-gray-400">Manage transaction event endpoints</p>
           </div>
         </div>
         <span className="text-gray-500 text-lg">›</span>
@@ -1096,6 +1387,18 @@ export default function Profile() {
           </button>
         </div>
 
+        {/* Active sessions link (#466) */}
+        <Link
+          to="/sessions"
+          className="flex items-center justify-between bg-gray-800 hover:bg-gray-700 rounded-xl px-4 py-3 mb-4 transition-colors"
+        >
+          <div className="flex items-center gap-2">
+            <Monitor size={15} className="text-gray-400" />
+            <span className="text-sm text-white">Active Sessions</span>
+          </div>
+          <span className="text-gray-500 text-lg">›</span>
+        </Link>
+
         {signersError && <p className="text-red-400 text-xs mb-3">{signersError}</p>}
 
         {/* Inflation destination notice */}
@@ -1248,6 +1551,16 @@ export default function Profile() {
       >
         <LogOut size={18} /> {t('common.sign_out')}
       </button>
+      {/* Avatar crop modal */}
+      {cropFile && (
+        <AvatarCrop
+          file={cropFile}
+          onSuccess={handleCropSuccess}
+          onClose={() => setCropFile(null)}
+          apiBase={process.env.REACT_APP_API_URL || 'http://localhost:5000/api'}
+          token={tokenStore.get()}
+        />
+      )}
       {/* Delete contact confirmation dialog */}
       {deleteContactPending && (
         <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/60 px-4">
