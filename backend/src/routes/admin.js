@@ -20,8 +20,17 @@ const {
   getContractUpgradeStatus,
   getContractEventsEndpoint,
   getContractEventsGlobalEndpoint,
-  indexContractEventsEndpoint
+  indexContractEventsEndpoint,
+  getFraudRules,
+  createFraudRule,
+  updateFraudRule,
+  bulkSuspend,
+  bulkUnsuspend,
+  bulkExport,
+  getJobStatus,
+  bulkKycUpdate,
 } = require('../controllers/adminController');
+const { getDeadLetterNotifications } = require('../controllers/notificationController');
 
 const validate = (req, res, next) => {
   const errors = validationResult(req);
@@ -178,5 +187,71 @@ router.post(
   validate,
   indexContractEventsEndpoint
 );
+
+// ---------------------------------------------------------------------------
+// Fraud Rule Engine (#690)
+// ---------------------------------------------------------------------------
+router.get('/fraud-rules', getFraudRules);
+
+router.post('/fraud-rules',
+  [
+    body('name').trim().notEmpty().isLength({ max: 100 }),
+    body('rule_type').isIn(['velocity', 'amount', 'daily_limit']),
+    body('parameters').isObject(),
+  ],
+  validate,
+  createFraudRule
+);
+
+router.patch('/fraud-rules/:id',
+  [
+    body('name').optional().trim().isLength({ max: 100 }),
+    body('parameters').optional().isObject(),
+    body('is_active').optional().isBoolean(),
+  ],
+  validate,
+  updateFraudRule
+);
+
+// ---------------------------------------------------------------------------
+// Bulk User Management (#692)
+// ---------------------------------------------------------------------------
+router.post('/users/bulk-suspend',
+  [
+    body('userIds').isArray({ min: 1 }),
+    body('reason').optional().trim().isLength({ max: 500 }),
+  ],
+  validate,
+  bulkSuspend
+);
+
+router.post('/users/bulk-unsuspend',
+  [body('userIds').isArray({ min: 1 })],
+  validate,
+  bulkUnsuspend
+);
+
+router.post('/users/bulk-export',
+  [body('userIds').isArray({ min: 1 })],
+  validate,
+  bulkExport
+);
+
+router.post('/users/bulk-kyc-update',
+  [
+    body('userIds').isArray({ min: 1 }),
+    body('status').isIn(['approved', 'rejected']),
+    body('reason').optional().trim().isLength({ max: 500 }),
+  ],
+  validate,
+  bulkKycUpdate
+);
+
+router.get('/jobs/:jobId', getJobStatus);
+
+// ---------------------------------------------------------------------------
+// Dead-letter notifications (#693)
+// ---------------------------------------------------------------------------
+router.get('/notifications/dead-letter', getDeadLetterNotifications);
 
 module.exports = router;
