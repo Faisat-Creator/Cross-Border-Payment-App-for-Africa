@@ -1,12 +1,14 @@
 import React, { useMemo, useState } from 'react';
 import { useNavigate } from 'react-router-dom';
-import { ArrowLeft, FileUp, Plus, Send, Trash2, Upload } from 'lucide-react';
+import { ArrowLeft, FileUp, Plus, Send, Trash2, Upload, AlertCircle, CheckCircle, Download } from 'lucide-react';
 import toast from 'react-hot-toast';
 import api from '../utils/api';
 import { CURRENCIES, truncateAddress } from '../utils/currency';
 
+const SINGLE_TRANSFER_LIMIT = 10000;
+
 function createEmptyRecipient() {
-  return { recipient_address: '', amount: '' };
+  return { recipient_address: '', amount: '', memo: '' };
 }
 
 function splitCsvLine(line) {
@@ -39,32 +41,140 @@ function splitCsvLine(line) {
   return values;
 }
 
+function validateStellarAddress(address) {
+  if (!address || typeof address !== 'string') {
+    return 'Address is required';
+  }
+  
+  const trimmed = address.trim();
+  
+  if (!trimmed.startsWith('G')) {
+    return 'Invalid Stellar address (must start with G)';
+  }
+  
+  if (trimmed.length !== 56) {
+    return `Invalid Stellar address (must be 56 characters, got ${trimmed.length})`;
+  }
+  
+  if (!/^[A-Z0-9]+$/.test(trimmed)) {
+    return 'Invalid Stellar address (contains invalid characters)';
+  }
+  
+  return null;
+}
+
+function validateAmount(amount) {
+  if (!amount && amount !== 0) {
+    return 'Amount is required';
+  }
+  
+  const numAmount = parseFloat(amount);
+  
+  if (isNaN(numAmount)) {
+    return 'Amount must be a valid number';
+  }
+  
+  if (numAmount <= 0) {
+    return 'Amount must be a positive number';
+  }
+  
+  if (numAmount > SINGLE_TRANSFER_LIMIT) {
+    return `Amount exceeds single-transfer limit of ${SINGLE_TRANSFER_LIMIT.toLocaleString()} USDC`;
+  }
+  
+  return null;
+}
+
+function validateRecipient(recipient, rowNumber) {
+  const errors = [];
+  
+  const addressError = validateStellarAddress(recipient.recipient_address);
+  if (addressError) {
+    errors.push(addressError);
+  }
+  
+  const amountError = validateAmount(recipient.amount);
+  if (amountError) {
+    errors.push(amountError);
+  }
+  
+  if (errors.length > 0) {
+    return {
+      rowNumber,
+      address: recipient.recipient_address,
+      amount: recipient.amount,
+      memo: recipient.memo || '',
+      error: errors.join('; ')
+    };
+  }
+  
+  return null;
+}
+
 function parseRecipientsCsv(text) {
   const lines = text
     .split(/\r?\n/)
     .map((line) => line.trim())
     .filter(Boolean);
 
-  if (!lines.length) return [];
+  if (!lines.length) return { recipients: [], errors: [] };
 
   const [headerLine, ...rows] = lines;
   const headers = splitCsvLine(headerLine).map((header) => header.toLowerCase());
+  
   const addressIndex = headers.findIndex((header) =>
     ['recipient_address', 'address', 'wallet_address', 'recipient'].includes(header)
   );
   const amountIndex = headers.findIndex((header) => header === 'amount');
+  const memoIndex = headers.findIndex((header) => header === 'memo');
 
   if (addressIndex === -1 || amountIndex === -1) {
-    throw new Error('CSV must include recipient_address and amount columns.');
+    throw new Error('CSV must include address and amount columns.');
   }
 
-  return rows.map((row) => {
+  const recipients = [];
+  const validationErrors = [];
+
+  rows.forEach((row, index) => {
     const columns = splitCsvLine(row);
-    return {
+    const recipient = {
       recipient_address: columns[addressIndex] || '',
       amount: columns[amountIndex] || '',
+      memo: memoIndex >= 0 ? columns[memoIndex] || '' : ''
     };
-  }).filter((recipient) => recipient.recipient_address || recipient.amount);
+
+    // Skip completely empty rows
+    if (!recipient.recipient_address && !recipient.amount) {
+      return;
+    }
+
+    const error = validateRecipient(recipient, index + 2); // +2 for header row and 0-indexing
+    
+    if (error) {
+      validationErrors.push(error);
+    }
+    
+    recipients.push(recipient);
+  });
+
+  return { recipients, errors: validationErrors };
+}
+
+function downloadCsvTemplate() {
+  const template = `address,amount,memo
+GABCDEFGHIJKLMNOPQRSTUVWXYZ234567890ABCDEFGHIJKLMNOP,100.50,Optional memo
+GXYZ234567890ABCDEFGHIJKLMNOPQRSTUVWXYZ234567890ABCD,250.75,Another example`;
+  
+  const blob = new Blob([template], { type: 'text/csv' });
+  const url = URL.createObjectURL(blob);
+  const a = document.createElement('a');
+  a.href = url;
+  a.download = 'batch_payment_template.csv';
+  document.body.appendChild(a);
+  a.click();
+  document.body.removeChild(a);
+  URL.revokeObjectURL(url);
+  toast.success('Template downloaded');
 }
 
 export default function BatchPayment() {
@@ -73,6 +183,7 @@ export default function BatchPayment() {
   const [memo, setMemo] = useState('');
   const [memoType, setMemoType] = useState('text');
   const [recipients, setRecipients] = useState([createEmptyRecipient()]);
+  const [validationErrors, setValidationErrors] = useState([]);
   const [submitting, setSubmitting] = useState(false);
   const [results, setResults] = useState(null);
 
@@ -81,10 +192,19 @@ export default function BatchPayment() {
     [recipients]
   );
 
+  const validRecipients = useMemo(() => {
+    return filledRecipients.filter((recipient, index) => {
+      const error = validateRecipient(recipient, index + 1);
+      return error === null;
+    });
+  }, [filledRecipients]);
+
   const totalAmount = useMemo(
-    () => filledRecipients.reduce((sum, recipient) => sum + (parseFloat(recipient.amount) || 0), 0),
-    [filledRecipients]
+    () => validRecipients.reduce((sum, recipient) => sum + (parseFloat(recipient.amount) || 0), 0),
+    [validRecipients]
   );
+
+  const hasInvalidRows = validationErrors.length > 0;
 
   const handleRecipientChange = (index, field, value) => {
     setRecipients((current) =>
@@ -92,6 +212,8 @@ export default function BatchPayment() {
         currentIndex === index ? { ...recipient, [field]: value } : recipient
       )
     );
+    // Clear validation errors when user makes changes
+    setValidationErrors([]);
   };
 
   const handleCsvUpload = async (event) => {
@@ -100,20 +222,39 @@ export default function BatchPayment() {
 
     try {
       const text = await file.text();
-      const parsed = parseRecipientsCsv(text);
+      const { recipients: parsed, errors } = parseRecipientsCsv(text);
+      
       if (!parsed.length) {
         toast.error('No recipients found in the CSV file');
         return;
       }
 
       setRecipients(parsed.slice(0, 100));
+      setValidationErrors(errors.slice(0, 100));
       setResults(null);
-      toast.success(`Imported ${Math.min(parsed.length, 100)} recipients`);
+      
+      if (errors.length > 0) {
+        toast.error(`Found ${errors.length} validation error${errors.length > 1 ? 's' : ''} in CSV`);
+      } else {
+        toast.success(`Imported ${Math.min(parsed.length, 100)} recipients`);
+      }
     } catch (error) {
       toast.error(error.message || 'Failed to parse CSV file');
     } finally {
       event.target.value = '';
     }
+  };
+
+  const validateCurrentRecipients = () => {
+    const errors = [];
+    filledRecipients.forEach((recipient, index) => {
+      const error = validateRecipient(recipient, index + 1);
+      if (error) {
+        errors.push(error);
+      }
+    });
+    setValidationErrors(errors);
+    return errors.length === 0;
   };
 
   const addRecipient = () => {
@@ -125,6 +266,7 @@ export default function BatchPayment() {
       const next = current.filter((_, currentIndex) => currentIndex !== index);
       return next.length ? next : [createEmptyRecipient()];
     });
+    setValidationErrors([]);
   };
 
   const handleSubmit = async (event) => {
@@ -135,11 +277,18 @@ export default function BatchPayment() {
       return;
     }
 
+    // Validate before submission
+    const isValid = validateCurrentRecipients();
+    if (!isValid) {
+      toast.error('Fix validation errors before submitting');
+      return;
+    }
+
     setSubmitting(true);
     try {
       const payload = {
         asset,
-        recipients: filledRecipients.map((recipient) => ({
+        recipients: validRecipients.map((recipient) => ({
           recipient_address: recipient.recipient_address.trim(),
           amount: parseFloat(recipient.amount),
         })),
@@ -180,11 +329,21 @@ export default function BatchPayment() {
             </p>
           </div>
 
-          <label className="inline-flex items-center gap-2 bg-primary-500 hover:bg-primary-600 text-white px-4 py-3 rounded-2xl cursor-pointer transition-colors">
-            <Upload size={18} />
-            <span>Import CSV</span>
-            <input type="file" accept=".csv,text/csv" className="hidden" onChange={handleCsvUpload} />
-          </label>
+          <div className="flex gap-2">
+            <button
+              type="button"
+              onClick={downloadCsvTemplate}
+              className="inline-flex items-center gap-2 bg-gray-700 hover:bg-gray-600 text-white px-4 py-3 rounded-2xl transition-colors"
+            >
+              <Download size={18} />
+              <span className="hidden md:inline">Template</span>
+            </button>
+            <label className="inline-flex items-center gap-2 bg-primary-500 hover:bg-primary-600 text-white px-4 py-3 rounded-2xl cursor-pointer transition-colors">
+              <Upload size={18} />
+              <span>Import CSV</span>
+              <input type="file" accept=".csv,text/csv" className="hidden" onChange={handleCsvUpload} />
+            </label>
+          </div>
         </div>
 
         <form onSubmit={handleSubmit} className="space-y-6">
@@ -229,6 +388,87 @@ export default function BatchPayment() {
             </div>
           </div>
 
+          {/* Validation Errors Table */}
+          {validationErrors.length > 0 && (
+            <div className="bg-red-950/30 border border-red-500/50 rounded-3xl overflow-hidden">
+              <div className="flex items-center gap-3 px-4 py-3 bg-red-900/30 border-b border-red-500/50">
+                <AlertCircle size={20} className="text-red-400" />
+                <div>
+                  <p className="text-red-300 font-semibold">Validation Errors</p>
+                  <p className="text-xs text-red-400">{validationErrors.length} row{validationErrors.length > 1 ? 's' : ''} with errors - fix before submitting</p>
+                </div>
+              </div>
+              
+              <div className="overflow-x-auto">
+                <table className="w-full">
+                  <thead className="bg-red-900/20 border-b border-red-500/50">
+                    <tr className="text-left">
+                      <th className="px-4 py-3 text-xs uppercase tracking-wider text-red-300">Row</th>
+                      <th className="px-4 py-3 text-xs uppercase tracking-wider text-red-300">Address</th>
+                      <th className="px-4 py-3 text-xs uppercase tracking-wider text-red-300">Amount</th>
+                      <th className="px-4 py-3 text-xs uppercase tracking-wider text-red-300">Error</th>
+                    </tr>
+                  </thead>
+                  <tbody className="divide-y divide-red-500/30">
+                    {validationErrors.map((error, index) => (
+                      <tr key={index} className="hover:bg-red-900/20">
+                        <td className="px-4 py-3 text-red-200 font-mono text-sm">{error.rowNumber}</td>
+                        <td className="px-4 py-3 text-red-200 font-mono text-sm truncate max-w-xs" title={error.address}>
+                          {error.address || <span className="text-red-400 italic">empty</span>}
+                        </td>
+                        <td className="px-4 py-3 text-red-200 font-mono text-sm">
+                          {error.amount || <span className="text-red-400 italic">empty</span>}
+                        </td>
+                        <td className="px-4 py-3 text-red-300 text-sm">{error.error}</td>
+                      </tr>
+                    ))}
+                  </tbody>
+                </table>
+              </div>
+            </div>
+          )}
+
+          {/* Valid Recipients Preview */}
+          {validRecipients.length > 0 && validationErrors.length > 0 && (
+            <div className="bg-green-950/30 border border-green-500/50 rounded-3xl overflow-hidden">
+              <div className="flex items-center gap-3 px-4 py-3 bg-green-900/30 border-b border-green-500/50">
+                <CheckCircle size={20} className="text-green-400" />
+                <div>
+                  <p className="text-green-300 font-semibold">Ready to Send</p>
+                  <p className="text-xs text-green-400">{validRecipients.length} valid row{validRecipients.length > 1 ? 's' : ''} • Total: {totalAmount.toFixed(7)} {asset}</p>
+                </div>
+              </div>
+              
+              <div className="overflow-x-auto">
+                <table className="w-full">
+                  <thead className="bg-green-900/20 border-b border-green-500/50">
+                    <tr className="text-left">
+                      <th className="px-4 py-3 text-xs uppercase tracking-wider text-green-300">Address</th>
+                      <th className="px-4 py-3 text-xs uppercase tracking-wider text-green-300">Amount</th>
+                    </tr>
+                  </thead>
+                  <tbody className="divide-y divide-green-500/30">
+                    {validRecipients.slice(0, 5).map((recipient, index) => (
+                      <tr key={index} className="hover:bg-green-900/20">
+                        <td className="px-4 py-3 text-green-200 font-mono text-sm truncate max-w-xs" title={recipient.recipient_address}>
+                          {truncateAddress(recipient.recipient_address, 12)}
+                        </td>
+                        <td className="px-4 py-3 text-green-200 font-mono text-sm">{recipient.amount}</td>
+                      </tr>
+                    ))}
+                    {validRecipients.length > 5 && (
+                      <tr>
+                        <td colSpan="2" className="px-4 py-3 text-center text-green-400 text-sm italic">
+                          ...and {validRecipients.length - 5} more
+                        </td>
+                      </tr>
+                    )}
+                  </tbody>
+                </table>
+              </div>
+            </div>
+          )}
+
           <div className="bg-gray-950 border border-gray-800 rounded-3xl overflow-hidden">
             <div className="flex items-center justify-between px-4 py-3 border-b border-gray-800">
               <div>
@@ -252,7 +492,7 @@ export default function BatchPayment() {
               <span>Delete</span>
             </div>
 
-            <div className="divide-y divide-gray-800">
+            <div className="divide-y divide-gray-800 max-h-[600px] overflow-y-auto">
               {recipients.map((recipient, index) => (
                 <div key={`${index}-${recipient.recipient_address}`} className="grid gap-3 px-4 py-4 md:grid-cols-[80px_minmax(0,1fr)_180px_72px] md:items-center">
                   <p className="text-xs uppercase tracking-[0.2em] text-gray-500 md:text-sm">{index + 1}</p>
@@ -287,8 +527,11 @@ export default function BatchPayment() {
 
           <div className="grid gap-4 md:grid-cols-3">
             <div className="bg-gray-950 border border-gray-800 rounded-2xl p-4">
-              <p className="text-gray-500 text-sm">Recipients</p>
-              <p className="text-2xl font-semibold text-white mt-1">{filledRecipients.length}</p>
+              <p className="text-gray-500 text-sm">Valid Recipients</p>
+              <p className="text-2xl font-semibold text-white mt-1">{validRecipients.length}</p>
+              {validationErrors.length > 0 && (
+                <p className="text-xs text-red-400 mt-1">{validationErrors.length} invalid</p>
+              )}
             </div>
             <div className="bg-gray-950 border border-gray-800 rounded-2xl p-4">
               <p className="text-gray-500 text-sm">Total amount</p>
@@ -302,11 +545,12 @@ export default function BatchPayment() {
 
           <button
             type="submit"
-            disabled={submitting || !filledRecipients.length}
-            className="w-full md:w-auto inline-flex items-center justify-center gap-2 bg-primary-500 hover:bg-primary-600 disabled:opacity-50 text-white px-6 py-3 rounded-2xl font-semibold"
+            disabled={submitting || !validRecipients.length || hasInvalidRows}
+            className="w-full md:w-auto inline-flex items-center justify-center gap-2 bg-primary-500 hover:bg-primary-600 disabled:opacity-50 disabled:cursor-not-allowed text-white px-6 py-3 rounded-2xl font-semibold"
+            title={hasInvalidRows ? 'Fix validation errors before submitting' : ''}
           >
             {submitting ? <FileUp size={18} className="animate-pulse" /> : <Send size={18} />}
-            Submit Batch
+            {hasInvalidRows ? 'Fix Errors to Submit' : 'Submit Batch'}
           </button>
         </form>
       </div>

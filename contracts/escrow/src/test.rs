@@ -127,6 +127,44 @@ fn test_fee_at_max_5000_accepted() {
     assert_eq!(client.get_escrow(&escrow_id).release_fee_bps, 5000);
 }
 
+// ── #560: fuzz-style boundary tests for fee_bps valid range ──────────────────
+
+#[test]
+fn test_fee_bps_zero_accepted() {
+    let (env, client, admin, usdc_id) = setup();
+    let sender = Address::generate(&env);
+    let recipient = Address::generate(&env);
+    let agent = Address::generate(&env);
+    let amount = 1_000_0000000i128;
+    mint_usdc(&env, &usdc_id, &admin, &sender, amount);
+    let escrow_id = client.create_escrow(&sender, &recipient, &agent, &amount, &0);
+    assert_eq!(client.get_escrow(&escrow_id).release_fee_bps, 0);
+}
+
+#[test]
+fn test_fee_bps_one_accepted() {
+    let (env, client, admin, usdc_id) = setup();
+    let sender = Address::generate(&env);
+    let recipient = Address::generate(&env);
+    let agent = Address::generate(&env);
+    let amount = 1_000_0000000i128;
+    mint_usdc(&env, &usdc_id, &admin, &sender, amount);
+    let escrow_id = client.create_escrow(&sender, &recipient, &agent, &amount, &1);
+    assert_eq!(client.get_escrow(&escrow_id).release_fee_bps, 1);
+}
+
+#[test]
+fn test_fee_bps_4999_accepted() {
+    let (env, client, admin, usdc_id) = setup();
+    let sender = Address::generate(&env);
+    let recipient = Address::generate(&env);
+    let agent = Address::generate(&env);
+    let amount = 1_000_0000000i128;
+    mint_usdc(&env, &usdc_id, &admin, &sender, amount);
+    let escrow_id = client.create_escrow(&sender, &recipient, &agent, &amount, &4999);
+    assert_eq!(client.get_escrow(&escrow_id).release_fee_bps, 4999);
+}
+
 // --- #354: upgrade access control test ---
 
 #[test]

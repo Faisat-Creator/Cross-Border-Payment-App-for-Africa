@@ -166,6 +166,10 @@ async function estimateFee(req, res, next) {
   }
 }
 
+function getFeeRate(req, res) {
+  res.json({ fee_bps: FEE_BPS });
+}
+
 async function getFeeStats(req, res, next) {
   try {
     const stats = await fetchFeeStats();
@@ -952,4 +956,4 @@ async function exportCSV(req, res, next) {
   }
 }
 
-module.exports = { send, sendBatch, history, findPath, sendPath, exportCSV, estimateFee, getFeeStats, findReceivePathHandler, sendStrictReceivePath };
+module.exports = { send, sendBatch, history, findPath, sendPath, exportCSV, estimateFee, getFeeStats, getFeeRate, findReceivePathHandler, sendStrictReceivePath };

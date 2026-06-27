@@ -14,6 +14,7 @@ const {
   exportCSV,
   estimateFee,
   getFeeStats,
+  getFeeRate,
   findPath,
   sendPath,
   findReceivePathHandler,
@@ -52,6 +53,7 @@ router.use(authMiddleware);
 
 router.get("/estimate-fee", estimateFee);
 router.get("/fee-stats", getFeeStats);
+router.get("/fee-rate", getFeeRate);
 
 /**
  * POST /api/payments/send

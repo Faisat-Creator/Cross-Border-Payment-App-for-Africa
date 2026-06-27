@@ -415,13 +415,7 @@ async function withSequenceRecovery(fn, publicKey, keypair) {
     return await fn();
   } catch (err) {
     if (!isBadSeq(err)) throw err;
-    logger.warn('tx_bad_seq detected, attempting bumpSequence recovery', { publicKey });
-    try {
-      await recoverSequence(publicKey, keypair);
-    } catch (recoveryErr) {
-      logger.error('bumpSequence recovery failed', { publicKey, error: recoveryErr.message });
-      throw recoveryErr;
-    }
+    logger.warn('tx_bad_seq detected, re-fetching account sequence and retrying', { publicKey });
     return await fn();
   }
 }

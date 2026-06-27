@@ -62,4 +62,48 @@ async function list(req, res, next) {
   }
 }
 
-module.exports = { create, list };
+async function listDeliveries(req, res, next) {
+  try {
+    const { webhook_id } = req.query;
+    let query = `
+      SELECT wd.id, wd.webhook_id, wd.event_type, wd.target_url, wd.status_code,
+             wd.response_time_ms, wd.status, wd.attempt, wd.max_attempts, wd.error_message,
+             wd.created_at, wd.completed_at
+      FROM webhook_deliveries wd
+      JOIN webhooks w ON w.id = wd.webhook_id
+      WHERE w.user_id = $1
+    `;
+    const params = [req.user.userId];
+    if (webhook_id) {
+      params.push(webhook_id);
+      query += ` AND wd.webhook_id = $${params.length}`;
+    }
+    query += ` ORDER BY wd.created_at DESC LIMIT 100`;
+    const { rows } = await db.query(query, params);
+    res.json({ deliveries: rows });
+  } catch (err) {
+    next(err);
+  }
+}
+
+async function retry(req, res, next) {
+  try {
+    const { id } = req.params;
+    // Verify ownership
+    const { rows } = await db.query(
+      `SELECT wd.id FROM webhook_deliveries wd
+       JOIN webhooks w ON w.id = wd.webhook_id
+       WHERE wd.id = $1 AND w.user_id = $2`,
+      [id, req.user.userId]
+    );
+    if (!rows.length) {
+      return res.status(404).json({ error: 'Delivery not found or not owned by user' });
+    }
+    await retryDelivery(id);
+    res.json({ message: 'Retry initiated' });
+  } catch (err) {
+    next(err);
+  }
+}
+
+module.exports = { create, list, listDeliveries, retry };

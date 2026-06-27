@@ -27,6 +27,69 @@ export function getPasswordStrength(password) {
   };
 }
 
+/**
+ * Issue #656: 4-level password strength model for the Register page.
+ *
+ * Scored across four dimensions surfaced in the checklist (length, uppercase,
+ * number, special character) and four character classes used for the level
+ * thresholds (lowercase, uppercase, number, special):
+ *   - Weak (red):        < 8 chars OR only one character class
+ *   - Fair (orange):     >= 8 chars and 2 character classes
+ *   - Strong (blue):     >= 8 chars and 3 character classes
+ *   - Very Strong (green): >= 12 chars and all 4 character classes
+ *
+ * Returns score 0 for an empty password (nothing to render).
+ */
+export function getRegisterPasswordStrength(password = '') {
+  const checks = {
+    length: password.length >= 8,
+    uppercase: /[A-Z]/.test(password),
+    number: /[0-9]/.test(password),
+    special: /[^A-Za-z0-9]/.test(password),
+  };
+
+  const classes =
+    (/[a-z]/.test(password) ? 1 : 0) +
+    (/[A-Z]/.test(password) ? 1 : 0) +
+    (/[0-9]/.test(password) ? 1 : 0) +
+    (/[^A-Za-z0-9]/.test(password) ? 1 : 0);
+
+  const len = password.length;
+
+  // 0 = empty, 1 = weak, 2 = fair, 3 = strong, 4 = very strong
+  let score;
+  if (len === 0) {
+    score = 0;
+  } else if (len >= 12 && classes === 4) {
+    score = 4;
+  } else if (len >= 8 && classes >= 3) {
+    score = 3;
+  } else if (len >= 8 && classes >= 2) {
+    score = 2;
+  } else {
+    score = 1;
+  }
+
+  const meta = [
+    { label: '', barColor: '', textColor: '' },
+    { label: 'Weak', barColor: 'bg-red-500', textColor: 'text-red-500' },
+    { label: 'Fair', barColor: 'bg-orange-500', textColor: 'text-orange-500' },
+    { label: 'Strong', barColor: 'bg-blue-500', textColor: 'text-blue-500' },
+    { label: 'Very Strong', barColor: 'bg-green-500', textColor: 'text-green-500' },
+  ][score];
+
+  return {
+    score,
+    classes,
+    checks,
+    label: meta.label,
+    barColor: meta.barColor,
+    textColor: meta.textColor,
+    // The Create Account button is enabled at "Fair" strength or above.
+    isAcceptable: score >= 2,
+  };
+}
+
 export function validateEmail(email) {
   const emailRegex = /^[^\s@]+@[^\s@]+\.[^\s@]+$/;
   return emailRegex.test(email);

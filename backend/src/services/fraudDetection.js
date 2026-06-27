@@ -36,7 +36,6 @@ async function checkLargeTransaction(walletAddress, amount, asset) {
      WHERE sender_wallet = $1 AND asset = $2 AND created_at > NOW() - INTERVAL '30 days'`,
     [walletAddress, asset]
   );
-
   const avgAmount = parseFloat(result.rows[0]?.avg_amount || 0);
   if (avgAmount > 0 && amount > avgAmount * FRAUD_RULES.LARGE_TRANSACTION.multiplier) {
     return { blocked: true, reason: `Transaction exceeds ${FRAUD_RULES.LARGE_TRANSACTION.multiplier}x average (${avgAmount} ${asset})` };
@@ -57,32 +56,11 @@ async function checkUniqueRecipients(walletAddress) {
   return { blocked: false };
 }
 
-async function checkDailyLimit(walletAddress, amount, asset) {
-  const XLM_USD_RATE = parseFloat(process.env.XLM_USD_RATE || '0.11');
-  const amountUSD = asset === 'USDC' ? parseFloat(amount) : parseFloat(amount) * XLM_USD_RATE;
-
-  const result = await db.query(
-    `SELECT SUM(CASE WHEN asset = 'USDC' THEN amount ELSE amount * $2 END) as total_usd
-     FROM transactions
-     WHERE sender_wallet = $1 AND created_at > NOW() - INTERVAL '24 hours'`,
-    [walletAddress, XLM_USD_RATE]
-  );
-
-  const totalUSD = parseFloat(result.rows[0]?.total_usd || 0) + amountUSD;
-  if (totalUSD > FRAUD_RULES.DAILY_LIMIT.amount) {
-    return { blocked: true, reason: `Daily limit exceeded: $${totalUSD.toFixed(2)} > $${FRAUD_RULES.DAILY_LIMIT.amount}` };
-  }
-  return { blocked: false };
-}
-
 async function checkFraud(walletAddress, amount, asset) {
   const checks = [
-    await checkVelocity(walletAddress),
     await checkLargeTransaction(walletAddress, amount, asset),
     await checkUniqueRecipients(walletAddress),
-    await checkDailyLimit(walletAddress, amount, asset)
   ];
-
   const blocked = checks.find(c => c.blocked);
   return blocked || { blocked: false };
 }
@@ -96,7 +74,10 @@ async function logFraudBlock(walletAddress, reason, amount, asset) {
 }
 
 module.exports = {
+  checkVelocity,
+  checkDailyLimit,
   checkFraud,
   logFraudBlock,
-  FRAUD_RULES
+  FRAUD_RULES,
+  _config: { WINDOW_HOURS, MAX_TX_PER_WINDOW, DAILY_LIMIT_USD },
 };

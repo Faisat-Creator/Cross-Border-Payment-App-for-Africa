@@ -20,6 +20,26 @@ export default function Escrow() {
   // Confirm/Cancel escrow
   const [selectedEscrow, setSelectedEscrow] = useState(null);
 
+  // Partial release modal (issue #657)
+  const [partialEscrow, setPartialEscrow] = useState(null);
+  const [partialAmount, setPartialAmount] = useState('');
+  const [partialLoading, setPartialLoading] = useState(false);
+
+  const FEE_BPS = 250; // platform fee fallback (2.5%)
+
+  const remainingBalance = (escrow) =>
+    parseFloat(escrow.amount) - parseFloat(escrow.released_amount || 0);
+
+  const openPartialRelease = (escrow) => {
+    setPartialEscrow(escrow);
+    setPartialAmount(String(remainingBalance(escrow)));
+  };
+
+  const closePartialRelease = () => {
+    setPartialEscrow(null);
+    setPartialAmount('');
+  };
+
   useEffect(() => {
     if (activeTab === 'list') {
       fetchEscrows();
@@ -88,6 +108,52 @@ export default function Escrow() {
       setLoading(false);
     }
   };
+
+  const handlePartialRelease = async (e) => {
+    e.preventDefault();
+    if (!partialEscrow) return;
+
+    const amount = parseFloat(partialAmount);
+    const remaining = remainingBalance(partialEscrow);
+
+    if (!Number.isFinite(amount) || amount <= 0) {
+      toast.error('Enter an amount greater than 0');
+      return;
+    }
+    if (amount > remaining) {
+      toast.error('Amount cannot exceed the escrowed balance');
+      return;
+    }
+
+    setPartialLoading(true);
+    try {
+      const { data } = await api.post(`/contracts/escrow/${partialEscrow.id}/partial-release`, {
+        amount,
+      });
+      toast.success('Partial release successful');
+      // Update the affected row in place without a full reload.
+      setEscrows((prev) =>
+        prev.map((esc) =>
+          esc.id === partialEscrow.id ? { ...esc, ...(data.escrow || {}) } : esc
+        )
+      );
+      closePartialRelease();
+    } catch (err) {
+      toast.error(err.response?.data?.error || 'Failed to release escrow');
+    } finally {
+      setPartialLoading(false);
+    }
+  };
+
+  const previewAmount = parseFloat(partialAmount) || 0;
+  const previewFee = (previewAmount * FEE_BPS) / 10000;
+  const previewNet = previewAmount - previewFee;
+  const partialError =
+    partialEscrow && previewAmount > 0 && previewAmount > remainingBalance(partialEscrow)
+      ? 'Amount cannot exceed the escrowed balance'
+      : partialEscrow && partialAmount !== '' && previewAmount <= 0
+      ? 'Amount must be greater than 0'
+      : '';
 
   return (
     <div className="min-h-screen bg-gray-50 dark:bg-gray-950 p-4 md:p-6">
@@ -207,6 +273,11 @@ export default function Escrow() {
                       <p className="font-medium text-gray-900 dark:text-white">
                         {escrow.amount} {escrow.asset}
                       </p>
+                      {parseFloat(escrow.released_amount || 0) > 0 && (
+                        <p className="text-sm text-blue-600 dark:text-blue-400">
+                          Remaining: {remainingBalance(escrow)} {escrow.asset}
+                        </p>
+                      )}
                       <p className="text-sm text-gray-500 dark:text-gray-400">
                         Status: <span className="font-medium capitalize">{escrow.status}</span>
                       </p>
@@ -235,16 +306,26 @@ export default function Escrow() {
                       </p>
 
                       {escrow.status === 'pending' && (
-                        <div className="flex gap-2 mt-4">
+                        <div className="flex flex-wrap gap-2 mt-4">
                           <button
                             onClick={(e) => {
                               e.stopPropagation();
                               handleConfirmEscrow(escrow.id);
                             }}
                             disabled={loading}
-                            className="flex-1 bg-green-600 hover:bg-green-700 disabled:bg-gray-400 text-white font-medium py-2 rounded-lg transition-colors"
+                            className="flex-1 min-w-[120px] bg-green-600 hover:bg-green-700 disabled:bg-gray-400 text-white font-medium py-2 rounded-lg transition-colors"
                           >
-                            Confirm
+                            Full Release
+                          </button>
+                          <button
+                            onClick={(e) => {
+                              e.stopPropagation();
+                              openPartialRelease(escrow);
+                            }}
+                            disabled={loading}
+                            className="flex-1 min-w-[120px] bg-blue-600 hover:bg-blue-700 disabled:bg-gray-400 text-white font-medium py-2 rounded-lg transition-colors"
+                          >
+                            Partial Release
                           </button>
                           <button
                             onClick={(e) => {
@@ -252,7 +333,7 @@ export default function Escrow() {
                               handleCancelEscrow(escrow.id);
                             }}
                             disabled={loading}
-                            className="flex-1 bg-red-600 hover:bg-red-700 disabled:bg-gray-400 text-white font-medium py-2 rounded-lg transition-colors"
+                            className="flex-1 min-w-[120px] bg-red-600 hover:bg-red-700 disabled:bg-gray-400 text-white font-medium py-2 rounded-lg transition-colors"
                           >
                             Cancel
                           </button>
@@ -266,6 +347,72 @@ export default function Escrow() {
           </div>
         )}
       </div>
+
+      {/* Partial Release Modal (issue #657) */}
+      {partialEscrow && (
+        <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/60 px-4">
+          <div className="bg-white dark:bg-gray-900 rounded-2xl p-6 w-full max-w-sm">
+            <h3 className="text-lg font-bold text-gray-900 dark:text-white mb-1">Partial Release</h3>
+            <p className="text-sm text-gray-500 dark:text-gray-400 mb-4">
+              Escrowed balance: {remainingBalance(partialEscrow)} {partialEscrow.asset}
+            </p>
+
+            <form onSubmit={handlePartialRelease} className="space-y-4">
+              <div>
+                <label className="block text-sm font-medium text-gray-700 dark:text-gray-300 mb-1">
+                  Amount to release
+                </label>
+                <input
+                  type="number"
+                  step="0.0000001"
+                  min="0"
+                  max={remainingBalance(partialEscrow)}
+                  value={partialAmount}
+                  onChange={(e) => setPartialAmount(e.target.value)}
+                  autoFocus
+                  className={`w-full px-3 py-2 border rounded-lg bg-white dark:bg-gray-800 text-gray-900 dark:text-white focus:ring-2 focus:ring-blue-500 outline-none ${
+                    partialError ? 'border-red-500' : 'border-gray-300 dark:border-gray-700'
+                  }`}
+                />
+                {partialError && <p className="text-xs text-red-500 mt-1">{partialError}</p>}
+              </div>
+
+              {/* Preview */}
+              <div className="rounded-lg bg-gray-50 dark:bg-gray-800 p-3 space-y-1 text-sm">
+                <div className="flex justify-between text-gray-600 dark:text-gray-400">
+                  <span>Amount to release</span>
+                  <span className="text-gray-900 dark:text-white">{previewAmount.toFixed(7)} {partialEscrow.asset}</span>
+                </div>
+                <div className="flex justify-between text-gray-600 dark:text-gray-400">
+                  <span>Platform fee ({(FEE_BPS / 100).toFixed(2)}%)</span>
+                  <span className="text-red-500">-{previewFee.toFixed(7)} {partialEscrow.asset}</span>
+                </div>
+                <div className="flex justify-between font-medium border-t border-gray-200 dark:border-gray-700 pt-1 mt-1">
+                  <span className="text-gray-700 dark:text-gray-300">Net to agent</span>
+                  <span className="text-green-600 dark:text-green-400">{previewNet.toFixed(7)} {partialEscrow.asset}</span>
+                </div>
+              </div>
+
+              <div className="flex gap-3">
+                <button
+                  type="button"
+                  onClick={closePartialRelease}
+                  className="flex-1 bg-gray-200 dark:bg-gray-700 hover:bg-gray-300 dark:hover:bg-gray-600 text-gray-900 dark:text-white font-medium py-2 rounded-lg transition-colors"
+                >
+                  Cancel
+                </button>
+                <button
+                  type="submit"
+                  disabled={partialLoading || !!partialError || previewAmount <= 0}
+                  className="flex-1 bg-blue-600 hover:bg-blue-700 disabled:bg-gray-400 text-white font-medium py-2 rounded-lg transition-colors"
+                >
+                  {partialLoading ? 'Releasing…' : 'Confirm Release'}
+                </button>
+              </div>
+            </form>
+          </div>
+        </div>
+      )}
     </div>
   );
 }

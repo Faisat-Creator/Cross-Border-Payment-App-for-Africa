@@ -1,4 +1,4 @@
-import React, { useEffect, useState, useMemo, useCallback } from 'react';
+import React, { useEffect, useRef, useState, useMemo, useCallback } from 'react';
 import { useNavigate, useSearchParams } from 'react-router-dom';
 import { ArrowLeft, Send, Download, ExternalLink, Filter, Search, Flag, X, WifiOff, Loader2, Copy, CheckCheck } from 'lucide-react';
 import api from '../utils/api';
@@ -89,15 +89,15 @@ export default function TransactionHistory() {
   const [reportType, setReportType] = useState('other');
   const [reportDesc, setReportDesc] = useState('');
   const [reportLoading, setReportLoading] = useState(false);
-  const [currentPage, setCurrentPage] = useState(1);
   const [selectedTx, setSelectedTx] = useState(null); // tx detail modal
   const [copiedHash, setCopiedHash] = useState(false);
+  const sentinelRef = useRef(null);
+  const SCROLL_KEY = 'txhistory_scroll';
 
   const fetchInitial = useCallback(async () => {
     setLoading(true);
     setError(null);
     setNextCursor(null);
-    setCurrentPage(1);
 
     // Offline — serve from IndexedDB cache
     if (!navigator.onLine) {
@@ -161,34 +161,45 @@ export default function TransactionHistory() {
     fetchInitial();
   }, [fetchInitial]);
 
-  // Sync current page number to URL query string for bookmarking
+  // Restore scroll position when returning to this page
   useEffect(() => {
-    setSearchParams(
-      (prev) => {
-        const next = new URLSearchParams(prev);
-        next.set('page', String(currentPage));
-        return next;
-      },
-      { replace: true }
-    );
-  }, [currentPage, setSearchParams]);
+    const saved = sessionStorage.getItem(SCROLL_KEY);
+    if (saved) window.scrollTo(0, parseInt(saved, 10));
+    return () => {
+      sessionStorage.setItem(SCROLL_KEY, String(Math.round(window.scrollY)));
+    };
+  }, []);
 
-  const loadMore = () => {
-    if (!nextCursor) return;
-    setLoadingMore(true);
-    const nextPage = currentPage + 1;
-    const params = buildHistoryParams(nextCursor, dateFrom, dateTo, asset);
-    api
-      .get('/payments/history', { params })
-      .then((r) => {
-        setTransactions((prev) => [...prev, ...r.data.transactions]);
-        setHasMore(r.data.has_more);
-        setNextCursor(r.data.next_cursor || null);
-        setCurrentPage(nextPage);
-      })
-      .catch(() => {})
-      .finally(() => setLoadingMore(false));
-  };
+  const loadMore = useCallback(() => {
+    if (nextCursor && !loadingMore) {
+      setLoadingMore(true);
+      const params = buildHistoryParams(nextCursor, dateFrom, dateTo, asset);
+      api
+        .get('/payments/history', { params })
+        .then((r) => {
+          setTransactions((prev) => [...prev, ...r.data.transactions]);
+          setHasMore(r.data.has_more);
+          setNextCursor(r.data.next_cursor || null);
+        })
+        .catch(() => {})
+        .finally(() => setLoadingMore(false));
+    }
+  }, [nextCursor, loadingMore, dateFrom, dateTo, asset]);
+
+  // IntersectionObserver: load next page when sentinel scrolls into view
+  useEffect(() => {
+    if (!sentinelRef.current) return undefined;
+    const observer = new IntersectionObserver(
+      ([entry]) => {
+        if (entry.isIntersecting && hasMore && !loadingMore) {
+          loadMore();
+        }
+      },
+      { rootMargin: '200px' }
+    );
+    observer.observe(sentinelRef.current);
+    return () => observer.disconnect();
+  }, [hasMore, loadingMore, loadMore]);
 
   const filtered = useMemo(() => {
     const q = search.trim().toLowerCase();
@@ -370,21 +381,7 @@ export default function TransactionHistory() {
         ))}
       </div>
 
-      {/* Pagination info bar: page number and record count */}
-      {!loading && !error && transactions.length > 0 && (
-        <div
-          aria-live="polite"
-          className="flex items-center justify-between text-xs text-gray-500 mb-3 px-1"
-        >
-          <span>Page {currentPage}</span>
-          <span>
-            Showing {filtered.length} record{filtered.length !== 1 ? 's' : ''}
-            {hasMore && (
-              <span className="ml-1 text-gray-600">&middot; more available</span>
-            )}
-          </span>
-        </div>
-      )}
+
 
       {loading ? (
         <div className="space-y-3" aria-busy="true" aria-label="Loading transactions">
@@ -515,14 +512,12 @@ export default function TransactionHistory() {
             ))}
           </div>
           {hasMore && (
-            <button
-              type="button"
-              onClick={loadMore}
-              disabled={loadingMore}
-              className="w-full mt-4 py-2.5 rounded-xl bg-gray-800 text-gray-300 hover:text-white hover:bg-gray-700 text-sm font-medium transition-colors disabled:opacity-50"
-            >
-              {loadingMore ? t('history.loading_more') : t('history.load_more')}
-            </button>
+            <div ref={sentinelRef} className="flex justify-center py-4" aria-live="polite" aria-label="Loading more transactions">
+              {loadingMore && <Loader2 size={20} className="animate-spin text-primary-400" />}
+            </div>
+          )}
+          {!hasMore && transactions.length > 0 && (
+            <p className="text-center text-xs text-gray-500 py-4">All transactions loaded</p>
           )}
         </>
       )}

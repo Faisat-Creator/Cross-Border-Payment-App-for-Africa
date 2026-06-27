@@ -47,6 +47,10 @@ const { runHealthChecks } = require('./services/health');
 
 const app = express();
 
+// Serve uploaded avatars
+const path = require('path');
+app.use('/uploads/avatars', express.static(path.join(__dirname, '../uploads/avatars')));
+
 app.use(Sentry.Handlers.requestHandler());
 app.use(requestId);
 app.use((req, res, next) => {

@@ -4,7 +4,16 @@
  */
 
 const router = require('express').Router();
+const { body, param, validationResult } = require('express-validator');
 const { getContractEvents } = require('../jobs/contractEventIndexer');
+const authMiddleware = require('../middleware/auth');
+const { partialRelease } = require('../controllers/agentEscrowController');
+
+const validate = (req, res, next) => {
+  const errors = validationResult(req);
+  if (!errors.isEmpty()) return res.status(400).json({ errors: errors.array() });
+  next();
+};
 
 /**
  * GET /api/contracts/:contractId/events
@@ -51,5 +60,20 @@ async function getContractEventsHandler(req, res, next) {
 }
 
 router.get('/:contractId/events', getContractEventsHandler);
+
+/**
+ * POST /api/contracts/escrow/:id/partial-release
+ * Releases part of a pending agent escrow to the agent (issue #657).
+ */
+router.post(
+  '/escrow/:id/partial-release',
+  authMiddleware,
+  [
+    param('id').isUUID().withMessage('Invalid escrow ID'),
+    body('amount').isFloat({ gt: 0 }).withMessage('Amount must be greater than 0'),
+  ],
+  validate,
+  partialRelease
+);
 
 module.exports = router;

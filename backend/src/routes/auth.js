@@ -1,5 +1,6 @@
 const router = require('express').Router();
 const { body, validationResult } = require('express-validator');
+const multer = require('multer');
 const { register, login, verifyEmail, getMe, setPIN, verifyPIN } = require('../controllers/authController');
 const {
   register,
@@ -12,6 +13,7 @@ const {
   changeEmail,
   verifyEmailChange,
   getActivity,
+  uploadAvatar,
   setup2FA,
   verify2FA,
   disable2FA,
@@ -147,6 +149,23 @@ router.post(
   [body('password').notEmpty().withMessage('Password is required')],
   validate,
   disable2FA
+);
+
+// Avatar upload — 5 MB limit, memory storage (magic bytes checked in controller)
+const avatarUpload = multer({
+  storage: multer.memoryStorage(),
+  limits: { fileSize: 5 * 1024 * 1024 },
+  fileFilter: (req, file, cb) => {
+    if (/^image\/(jpeg|png|webp)$/.test(file.mimetype)) cb(null, true);
+    else cb(new Error('Only JPEG, PNG, and WebP files are allowed'));
+  },
+});
+
+router.post(
+  '/avatar',
+  authMiddleware,
+  avatarUpload.single('avatar'),
+  uploadAvatar
 );
 
 // Session management

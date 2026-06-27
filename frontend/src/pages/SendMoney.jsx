@@ -17,6 +17,7 @@ import api from '../utils/api';
 import { useExchangeRates } from '../hooks/useExchangeRates';
 import toast from 'react-hot-toast';
 import { useTranslation } from 'react-i18next';
+import { Skeleton } from '../components/Skeleton';
 import QRScanner from '../components/QRScanner';
 import PINVerificationModal from '../components/PINVerificationModal';
 import XDRInspectorModal from '../components/XDRInspectorModal';
@@ -29,6 +30,10 @@ const getSavedSlippage = () => {
   const v = parseFloat(localStorage.getItem('afripay_slippage'));
   return SLIPPAGE_OPTIONS.includes(v) ? v : DEFAULT_SLIPPAGE;
 };
+
+/** Trims trailing zeros from a Stellar-precision (7dp) amount for display. */
+const fmtFee = (n) =>
+  parseFloat(Number(n).toFixed(7)).toLocaleString(undefined, { maximumFractionDigits: 7 });
 
 export default function SendMoney() {
   const navigate = useNavigate();
@@ -59,6 +64,10 @@ export default function SendMoney() {
   const [loading, setLoading] = useState(false);
   const [confirmed, setConfirmed] = useState(false);
   const [feeXLM, setFeeXLM] = useState(null);
+  // Issue #641: pre-submission fee estimation preview
+  const [feeEstimate, setFeeEstimate] = useState(null);
+  const [feeEstimateLoading, setFeeEstimateLoading] = useState(false);
+  const [feeEstimateError, setFeeEstimateError] = useState(false);
   const [contractSimData, setContractSimData] = useState(null);
   const [contractSimLoading, setContractSimLoading] = useState(false);
   const [requestId] = useState(searchParams.get('request'));
@@ -168,6 +177,82 @@ export default function SendMoney() {
       .then((r) => setFeeStats(r.data))
       .catch(() => {});
   }, []);
+
+  // Issue #641: debounced fee estimation preview as the user types an amount.
+  useEffect(() => {
+    const gross = parseFloat(form.amount);
+    if (!form.amount || !Number.isFinite(gross) || gross <= 0) {
+      setFeeEstimate(null);
+      setFeeEstimateError(false);
+      setFeeEstimateLoading(false);
+      return;
+    }
+
+    let cancelled = false;
+    setFeeEstimateLoading(true);
+    setFeeEstimateError(false);
+
+    const timer = setTimeout(async () => {
+      try {
+        const [rateRes, networkRes] = await Promise.all([
+          api.get('/payments/fee-rate'),
+          api.get('/payments/estimate-fee'),
+        ]);
+        if (cancelled) return;
+        const feeBps = rateRes.data?.fee_bps;
+        if (feeBps == null || Number.isNaN(Number(feeBps))) {
+          throw new Error('Fee rate unavailable');
+        }
+        const platformFee = gross * (Number(feeBps) / 10000);
+        setFeeEstimate({
+          gross,
+          asset: form.asset,
+          feePct: Number(feeBps) / 100,
+          platformFee,
+          networkFeeXLM: networkRes.data?.fee_xlm ?? null,
+          netAmount: gross - platformFee,
+        });
+      } catch {
+        if (cancelled) return;
+        setFeeEstimate(null);
+        setFeeEstimateError(true);
+      } finally {
+        if (!cancelled) setFeeEstimateLoading(false);
+      }
+    }, 300);
+
+    return () => {
+      cancelled = true;
+      clearTimeout(timer);
+    };
+  // Fee estimation preview (Issue #641)
+  const [feePreview, setFeePreview] = useState(null);
+  const [feePreviewLoading, setFeePreviewLoading] = useState(false);
+  const [feePreviewError, setFeePreviewError] = useState(false);
+  useEffect(() => {
+    const amount = parseFloat(form.amount);
+    if (!amount || amount <= 0) {
+      setFeePreview(null);
+      setFeePreviewError(false);
+      return;
+    }
+    setFeePreviewLoading(true);
+    setFeePreviewError(false);
+    const timer = setTimeout(() => {
+      api
+        .get('/payments/fee-stats')
+        .then((r) => {
+          const feeBps = r.data?.fee_bps ?? 50;
+          const networkFeeXlm = r.data?.fee_xlm ?? 0.00001;
+          const platformFee = (amount * feeBps) / 10000;
+          const net = amount - platformFee;
+          setFeePreview({ amount, platformFee, feeBps, networkFeeXlm, net, asset: form.asset });
+        })
+        .catch(() => setFeePreviewError(true))
+        .finally(() => setFeePreviewLoading(false));
+    }, 300);
+    return () => clearTimeout(timer);
+  }, [form.amount, form.asset]);
 
   // Warn the user before closing/refreshing the tab when the form has data
   useBeforeUnload(
@@ -928,6 +1013,41 @@ export default function SendMoney() {
               ⚠️ Low XLM balance. You need at least {feeXLM} XLM to cover the network fee.
             </div>
           )}
+          {/* Fee estimation preview (Issue #641) */}
+          {(feePreviewLoading || feePreview || feePreviewError) && (
+            <div className="mt-3 bg-gray-800/60 border border-gray-700 rounded-xl px-4 py-3 text-sm space-y-1.5">
+              {feePreviewLoading ? (
+                <>
+                  <div className="skeleton h-3 w-32 rounded" />
+                  <div className="skeleton h-3 w-24 rounded" />
+                  <div className="skeleton h-3 w-28 rounded" />
+                </>
+              ) : feePreviewError ? (
+                <p className="text-gray-400 text-xs">
+                  Fee estimate unavailable — final fee will be shown at confirmation.
+                </p>
+              ) : feePreview ? (
+                <>
+                  <div className="flex justify-between text-gray-400">
+                    <span>Gross amount</span>
+                    <span className="text-white">{feePreview.amount.toFixed(7)} {feePreview.asset}</span>
+                  </div>
+                  <div className="flex justify-between text-gray-400">
+                    <span>Platform fee ({(feePreview.feeBps / 100).toFixed(2)}%)</span>
+                    <span className="text-red-400">− {feePreview.platformFee.toFixed(7)} {feePreview.asset}</span>
+                  </div>
+                  <div className="flex justify-between text-gray-400">
+                    <span>Network fee (est.)</span>
+                    <span className="text-red-400">~ {feePreview.networkFeeXlm} XLM</span>
+                  </div>
+                  <div className="flex justify-between font-semibold border-t border-gray-700 pt-1.5">
+                    <span className="text-gray-300">Recipient receives</span>
+                    <span className="text-green-400">{feePreview.net.toFixed(7)} {feePreview.asset}</span>
+                  </div>
+                </>
+              ) : null}
+            </div>
+          )}
           {belowMinBalance && (
             <div className="mt-2 bg-red-500/10 border border-red-500/40 rounded-xl px-4 py-3 text-red-400 text-sm">
               ⚠️ This amount exceeds your available balance ({availableXlm.toLocaleString()} XLM).
@@ -935,6 +1055,56 @@ export default function SendMoney() {
             </div>
           )}
         </div>
+
+        {/* Fee estimation preview (issue #641) */}
+        {(feeEstimateLoading || feeEstimate || feeEstimateError) && (
+          <div
+            data-testid="fee-estimate"
+            className="bg-gray-800 border border-gray-700 rounded-xl p-4"
+          >
+            <p className="text-sm font-semibold text-gray-300 mb-2">Fee breakdown</p>
+            {feeEstimateLoading ? (
+              <div className="space-y-2" data-testid="fee-estimate-skeleton" aria-hidden="true">
+                <Skeleton className="h-4 w-full" />
+                <Skeleton className="h-4 w-3/4" />
+                <Skeleton className="h-4 w-1/2" />
+              </div>
+            ) : feeEstimateError ? (
+              <p className="text-sm text-yellow-400">
+                Fee estimate unavailable — final fee will be shown at confirmation.
+              </p>
+            ) : feeEstimate ? (
+              <dl className="space-y-1.5 text-sm">
+                <div className="flex justify-between">
+                  <dt className="text-gray-400">Gross amount</dt>
+                  <dd className="text-white">
+                    {fmtFee(feeEstimate.gross)} {feeEstimate.asset}
+                  </dd>
+                </div>
+                <div className="flex justify-between">
+                  <dt className="text-gray-400">
+                    Platform fee ({feeEstimate.feePct}%)
+                  </dt>
+                  <dd className="text-white">
+                    {fmtFee(feeEstimate.platformFee)} {feeEstimate.asset}
+                  </dd>
+                </div>
+                <div className="flex justify-between">
+                  <dt className="text-gray-400">Est. network fee</dt>
+                  <dd className="text-white">
+                    {feeEstimate.networkFeeXLM != null ? `${feeEstimate.networkFeeXLM} XLM` : '—'}
+                  </dd>
+                </div>
+                <div className="flex justify-between border-t border-gray-700 pt-1.5 font-semibold">
+                  <dt className="text-gray-300">Recipient receives</dt>
+                  <dd className="text-green-400">
+                    {fmtFee(feeEstimate.netAmount)} {feeEstimate.asset}
+                  </dd>
+                </div>
+              </dl>
+            ) : null}
+          </div>
+        )}
 
         {/* Path payment toggle (issue #458) */}
         <div>

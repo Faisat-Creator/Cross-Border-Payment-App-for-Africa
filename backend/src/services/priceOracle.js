@@ -1,8 +1,11 @@
 const StellarSdk = require('@stellar/stellar-sdk');
 const { withFallback } = require('./stellar');
 const logger = require('../utils/logger');
+const cache = require('../utils/cache');
 
 const SDEX_CACHE_TTL_MS = 60_000;        // XLM/USD refreshes every 60 s
+const SDEX_REDIS_KEY = 'sdex:xlm_price';
+const SDEX_REDIS_TTL_S = 60;
 const FIAT_CACHE_TTL_MS = 60 * 60_000;  // USD→fiat refreshes every 60 min
 
 // Fallback multipliers used when the exchange-rate API is unreachable
@@ -36,6 +39,10 @@ async function fetchSdexPrice() {
 }
 
 async function getXlmPrice() {
+  // Redis is the primary cache — shared across all instances, reduces Horizon load
+  const redisPrice = await cache.get(SDEX_REDIS_KEY);
+  if (redisPrice !== null) return redisPrice;
+
   const now = Date.now();
   if (sdexCache.price !== null && now - sdexCache.fetchedAt < SDEX_CACHE_TTL_MS) {
     return sdexCache.price;
@@ -43,6 +50,7 @@ async function getXlmPrice() {
   try {
     const price = await fetchSdexPrice();
     sdexCache = { price, fetchedAt: now };
+    await cache.set(SDEX_REDIS_KEY, price, SDEX_REDIS_TTL_S);
     return price;
   } catch (err) {
     logger.warn('SDEX price fetch failed, using last known price', { error: err.message });

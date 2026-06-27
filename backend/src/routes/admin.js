@@ -9,6 +9,7 @@ const {
   getStats,
   getUsers,
   getTransactions,
+  getDailyTransactionStats,
   getStellarNetworkStats,
   clawback,
   approveKYC,
@@ -60,6 +61,7 @@ router.get('/health', async (req, res) => {
 });
 
 router.get('/stats', getStats);
+router.get('/daily-stats', getDailyTransactionStats);
 router.get('/users', getUsers);
 router.get('/transactions', getTransactions);
 router.get('/stellar-stats', getStellarNetworkStats);

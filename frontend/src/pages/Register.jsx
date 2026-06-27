@@ -2,10 +2,9 @@ import React, { useState, useMemo } from 'react';
 import { useNavigate, Link, useSearchParams } from 'react-router-dom';
 import { useAuth } from '../context/AuthContext';
 import toast from 'react-hot-toast';
-import { Eye, EyeOff, ArrowLeft, ChevronDown, ChevronUp, Check, X, Phone } from 'lucide-react';
-import { Eye, EyeOff, ArrowLeft, ChevronDown, ChevronUp, Check, X, AlertCircle } from 'lucide-react';
+import { Eye, EyeOff, ArrowLeft, ChevronDown, ChevronUp, Check, X, AlertCircle, Phone } from 'lucide-react';
 import { useTranslation } from 'react-i18next';
-import { getPasswordStrength, validateEmail, getEmailError, getPasswordError } from '../utils/passwordValidator';
+import { getRegisterPasswordStrength, getEmailError } from '../utils/passwordValidator';
 
 export default function Register() {
   const { register } = useAuth();
@@ -13,6 +12,7 @@ export default function Register() {
   const [searchParams] = useSearchParams();
   const { t } = useTranslation();
   const [form, setForm] = useState({ full_name: '', email: '', password: '', phone: '' });
+  const [confirmPassword, setConfirmPassword] = useState('');
   const [showPass, setShowPass] = useState(false);
   const [loading, setLoading] = useState(false);
   const [showPINSetup, setShowPINSetup] = useState(false);
@@ -28,9 +28,18 @@ export default function Register() {
   const [phoneVerifyLoading, setPhoneVerifyLoading] = useState(false);
   const [registeredPhone, setRegisteredPhone] = useState('');
 
-  const strength = useMemo(() => getPasswordStrength(form.password), [form.password]);
+  // Password strength indicator (issue #656)
+  const strength = useMemo(() => getRegisterPasswordStrength(form.password), [form.password]);
   const emailError = touched.email ? getEmailError(form.email) : '';
-  const passwordError = touched.password ? getPasswordError(form.password) : '';
+  const passwordsMatch = confirmPassword.length > 0 && confirmPassword === form.password;
+  const passwordsMismatch = confirmPassword.length > 0 && confirmPassword !== form.password;
+
+  const checklist = [
+    { key: 'length', label: 'At least 8 characters' },
+    { key: 'uppercase', label: 'One uppercase letter' },
+    { key: 'number', label: 'One number' },
+    { key: 'special', label: 'One special character' },
+  ];
 
   const handleSubmit = async (e) => {
     e.preventDefault();
@@ -43,12 +52,16 @@ export default function Register() {
       toast.error('Full name is required');
       return;
     }
-    if (emailError) {
-      toast.error(emailError);
+    if (getEmailError(form.email)) {
+      toast.error(getEmailError(form.email));
       return;
     }
-    if (passwordError) {
-      toast.error(passwordError);
+    if (!strength.isAcceptable) {
+      toast.error('Please choose a stronger password (at least "Fair").');
+      return;
+    }
+    if (confirmPassword !== form.password) {
+      toast.error('Passwords do not match');
       return;
     }
 
@@ -74,7 +87,12 @@ export default function Register() {
         setRegisteredPhone(form.phone);
         setShowPhoneVerify(true);
       } else {
-        navigate('/login');
+        const redirect = sessionStorage.getItem('afripay_redirect');
+        if (redirect) {
+          navigate('/login?redirect=' + encodeURIComponent(redirect));
+        } else {
+          navigate('/login');
+        }
       }
     } catch (err) {
       toast.error(err.response?.data?.error || t('register.error'));
@@ -88,7 +106,6 @@ export default function Register() {
     setPhoneVerifyLoading(true);
     try {
       // Note: This requires authentication, so user needs to login first
-      // For now, we'll navigate to login and show a message
       toast.success('Account created. Please log in to verify your phone number.');
       navigate('/login');
     } catch (err) {
@@ -97,6 +114,9 @@ export default function Register() {
       setPhoneVerifyLoading(false);
     }
   };
+
+  const submitDisabled =
+    loading || !form.full_name.trim() || !!emailError || !strength.isAcceptable || passwordsMismatch;
 
   return (
     <div className="min-h-screen bg-gray-50 dark:bg-gray-950 flex flex-col px-6 py-8 transition-colors duration-200">
@@ -124,7 +144,6 @@ export default function Register() {
               placeholder="[Full Name]"
               value={form.full_name}
               onChange={(e) => setForm({ ...form, full_name: e.target.value })}
-              onChange={e => setForm({ ...form, full_name: e.target.value })}
               onBlur={() => setTouched({ ...touched, full_name: true })}
               className="w-full bg-white dark:bg-gray-800 border border-gray-200 dark:border-gray-700 rounded-xl px-4 py-3 text-gray-900 dark:text-white placeholder-gray-400 dark:placeholder-gray-500 focus:outline-none focus:border-primary-500 transition-colors shadow-sm"
             />
@@ -134,6 +153,7 @@ export default function Register() {
               </p>
             )}
           </div>
+
           <div>
             <label className="text-sm text-gray-600 dark:text-gray-400 mb-1 block">
               {t('register.email')}
@@ -144,8 +164,6 @@ export default function Register() {
               placeholder="[email]"
               value={form.email}
               onChange={(e) => setForm({ ...form, email: e.target.value })}
-              className="w-full bg-white dark:bg-gray-800 border border-gray-200 dark:border-gray-700 rounded-xl px-4 py-3 text-gray-900 dark:text-white placeholder-gray-400 dark:placeholder-gray-500 focus:outline-none focus:border-primary-500 transition-colors shadow-sm"
-              onChange={e => setForm({ ...form, email: e.target.value })}
               onBlur={() => setTouched({ ...touched, email: true })}
               className={`w-full bg-white dark:bg-gray-800 border rounded-xl px-4 py-3 text-gray-900 dark:text-white placeholder-gray-400 dark:placeholder-gray-500 focus:outline-none focus:border-primary-500 transition-colors shadow-sm ${
                 emailError ? 'border-red-500 dark:border-red-500' : 'border-gray-200 dark:border-gray-700'
@@ -157,6 +175,7 @@ export default function Register() {
               </p>
             )}
           </div>
+
           <div>
             <label className="text-sm text-gray-600 dark:text-gray-400 mb-1 block">
               {t('register.phone')}
@@ -169,6 +188,7 @@ export default function Register() {
               className="w-full bg-white dark:bg-gray-800 border border-gray-200 dark:border-gray-700 rounded-xl px-4 py-3 text-gray-900 dark:text-white placeholder-gray-400 dark:placeholder-gray-500 focus:outline-none focus:border-primary-500 transition-colors shadow-sm"
             />
           </div>
+
           <div>
             <label className="text-sm text-gray-600 dark:text-gray-400 mb-1 block">
               {t('register.password')}
@@ -181,12 +201,8 @@ export default function Register() {
                 placeholder={t('register.password_placeholder')}
                 value={form.password}
                 onChange={(e) => setForm({ ...form, password: e.target.value })}
-                className="w-full bg-white dark:bg-gray-800 border border-gray-200 dark:border-gray-700 rounded-xl px-4 py-3 text-gray-900 dark:text-white placeholder-gray-400 dark:placeholder-gray-500 focus:outline-none focus:border-primary-500 transition-colors pr-12 shadow-sm"
-                onChange={e => setForm({ ...form, password: e.target.value })}
                 onBlur={() => setTouched({ ...touched, password: true })}
-                className={`w-full bg-white dark:bg-gray-800 border rounded-xl px-4 py-3 text-gray-900 dark:text-white placeholder-gray-400 dark:placeholder-gray-500 focus:outline-none focus:border-primary-500 transition-colors pr-12 shadow-sm ${
-                  passwordError ? 'border-red-500 dark:border-red-500' : 'border-gray-200 dark:border-gray-700'
-                }`}
+                className="w-full bg-white dark:bg-gray-800 border border-gray-200 dark:border-gray-700 rounded-xl px-4 py-3 text-gray-900 dark:text-white placeholder-gray-400 dark:placeholder-gray-500 focus:outline-none focus:border-primary-500 transition-colors pr-12 shadow-sm"
               />
               <button
                 type="button"
@@ -196,37 +212,30 @@ export default function Register() {
                 {showPass ? <EyeOff size={18} /> : <Eye size={18} />}
               </button>
             </div>
-            {passwordError && (
-              <p className="text-xs text-red-500 mt-1 flex items-center gap-1">
-                <AlertCircle size={12} /> {passwordError}
-              </p>
-            )}
+
+            {/* Strength indicator (issue #656) — hidden when password is empty */}
             {form.password && (
-              <div className="mt-2 space-y-2">
+              <div className="mt-2 space-y-2" aria-live="polite">
                 <div className="flex gap-1">
                   {[1, 2, 3, 4].map((i) => (
                     <div
                       key={i}
-                      className={`h-1 flex-1 rounded-full transition-colors ${i <= strength.score ? strength.barColor : 'bg-gray-200 dark:bg-gray-700'}`}
+                      className={`h-1.5 flex-1 rounded-full transition-colors ${
+                        i <= strength.score ? strength.barColor : 'bg-gray-200 dark:bg-gray-700'
+                      }`}
                     />
-                  {[1, 2, 3, 4, 5].map(i => (
-                    <div key={i} className={`h-1 flex-1 rounded-full transition-colors ${i <= strength.score ? strength.barColor : 'bg-gray-200 dark:bg-gray-700'}`} />
                   ))}
                 </div>
-                <p className={`text-xs font-medium capitalize ${strength.textColor}`}>
+                <p className={`text-xs font-medium ${strength.textColor}`}>
                   {strength.label}
                 </p>
-                <ul className="space-y-1">
-                  {[
-                    { key: 'length', label: 'At least 8 characters' },
-                    { key: 'uppercase', label: 'One uppercase letter' },
-                    { key: 'lowercase', label: 'One lowercase letter' },
-                    { key: 'number', label: 'One number' },
-                    { key: 'special', label: 'One special character' },
-                  ].map(({ key, label }) => (
+                <ul className="grid grid-cols-2 gap-x-3 gap-y-1">
+                  {checklist.map(({ key, label }) => (
                     <li
                       key={key}
-                      className={`flex items-center gap-1.5 text-xs ${strength.checks[key] ? 'text-green-500' : 'text-gray-400 dark:text-gray-500'}`}
+                      className={`flex items-center gap-1.5 text-xs ${
+                        strength.checks[key] ? 'text-green-500' : 'text-gray-400 dark:text-gray-500'
+                      }`}
                     >
                       {strength.checks[key] ? <Check size={12} /> : <X size={12} />} {label}
                     </li>
@@ -236,10 +245,40 @@ export default function Register() {
             )}
           </div>
 
+          {/* Confirm password (issue #656) */}
+          <div>
+            <label className="text-sm text-gray-600 dark:text-gray-400 mb-1 block">
+              Confirm password
+            </label>
+            <div className="relative">
+              <input
+                type={showPass ? 'text' : 'password'}
+                placeholder="Re-enter your password"
+                value={confirmPassword}
+                onChange={(e) => setConfirmPassword(e.target.value)}
+                className={`w-full bg-white dark:bg-gray-800 border rounded-xl px-4 py-3 text-gray-900 dark:text-white placeholder-gray-400 dark:placeholder-gray-500 focus:outline-none focus:border-primary-500 transition-colors pr-12 shadow-sm ${
+                  passwordsMismatch
+                    ? 'border-red-500 dark:border-red-500'
+                    : passwordsMatch
+                    ? 'border-green-500 dark:border-green-500'
+                    : 'border-gray-200 dark:border-gray-700'
+                }`}
+              />
+              {passwordsMatch && (
+                <Check size={18} className="absolute right-3 top-1/2 -translate-y-1/2 text-green-500" />
+              )}
+            </div>
+            {passwordsMismatch && (
+              <p className="text-xs text-red-500 mt-1 flex items-center gap-1">
+                <AlertCircle size={12} /> Passwords do not match
+              </p>
+            )}
+          </div>
+
           <button
             type="submit"
-            disabled={loading || !form.full_name.trim() || emailError || passwordError}
-            className="w-full bg-primary-500 hover:bg-primary-600 disabled:opacity-50 text-white font-semibold py-3.5 rounded-xl transition-colors mt-2"
+            disabled={submitDisabled}
+            className="w-full bg-primary-500 hover:bg-primary-600 disabled:opacity-50 disabled:cursor-not-allowed text-white font-semibold py-3.5 rounded-xl transition-colors mt-2"
           >
             {loading ? t('register.submitting') : t('register.submit')}
           </button>

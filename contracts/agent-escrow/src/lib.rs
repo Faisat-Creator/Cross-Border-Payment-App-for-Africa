@@ -23,6 +23,7 @@ pub enum DataKey {
     UsdcAddress,
     Counter,
     Fees,
+    CancelWindow,
     Escrow(u64),
 }
 
@@ -87,11 +88,6 @@ pub struct EvtCancelled {
     pub refund_amount: i128,
 }
 
-// ── Constants ─────────────────────────────────────────────────────────────────
-
-/// 48 hours in seconds — cancellation window.
-const CANCEL_WINDOW_SECS: u64 = 48 * 60 * 60;
-
 // ── Contract ──────────────────────────────────────────────────────────────────
 
 #[contract]
@@ -102,14 +98,16 @@ impl AgentEscrowContract {
     /// Initialise the contract. Must be called once before any other function.
     ///
     /// # Arguments
-    /// * `admin`        — Address that may withdraw accumulated fees.
-    /// * `usdc_address` — Stellar asset contract address for USDC.
-    pub fn initialize(env: Env, admin: Address, usdc_address: Address) {
+    /// * `admin`                  — Address that may withdraw accumulated fees.
+    /// * `usdc_address`           — Stellar asset contract address for USDC.
+    /// * `cancel_window_seconds`  — Seconds after escrow creation before the sender may cancel.
+    pub fn initialize(env: Env, admin: Address, usdc_address: Address, cancel_window_seconds: u64) {
         if env.storage().persistent().has(&DataKey::Admin) {
             panic!("already initialized");
         }
         env.storage().persistent().set(&DataKey::Admin, &admin);
         env.storage().persistent().set(&DataKey::UsdcAddress, &usdc_address);
+        env.storage().persistent().set(&DataKey::CancelWindow, &cancel_window_seconds);
         env.storage().persistent().set(&DataKey::Counter, &0u64);
     }
 
@@ -163,8 +161,13 @@ impl AgentEscrowContract {
         let id = current_count.checked_add(1).expect("Escrow counter overflow");
         env.storage().persistent().set(&DataKey::Counter, &id);
 
+        let cancel_window: u64 = env
+            .storage()
+            .persistent()
+            .get(&DataKey::CancelWindow)
+            .expect("not initialized");
         let now = env.ledger().timestamp();
-        let expires_at = now + CANCEL_WINDOW_SECS;
+        let expires_at = now + cancel_window;
 
         let escrow = AgentEscrow {
             id,
@@ -322,13 +325,17 @@ impl AgentEscrowContract {
             panic!("unauthorized: caller is not admin");
         }
 
+        if amount <= 0 {
+            panic!("withdrawal amount must be greater than zero");
+        }
+
         let fees: i128 = env
             .storage()
             .persistent()
             .get(&DataKey::Fees)
             .unwrap_or(0);
         if amount > fees {
-            panic!("insufficient accumulated fees");
+            panic!("withdrawal amount exceeds accumulated fees");
         }
 
         let usdc: Address = env

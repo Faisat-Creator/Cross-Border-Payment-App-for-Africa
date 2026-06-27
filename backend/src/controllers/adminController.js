@@ -107,6 +107,28 @@ async function getTransactions(req, res, next) {
 
 
 
+async function getDailyTransactionStats(req, res, next) {
+  try {
+    const days = Math.min(parseInt(req.query.days) || 30, 90);
+    const from = new Date();
+    from.setDate(from.getDate() - days);
+    const { rows } = await db.query(`
+      SELECT
+        DATE(created_at)                                               AS date,
+        COUNT(*)                                                       AS tx_count,
+        COALESCE(SUM(amount), 0)                                       AS volume,
+        COALESCE(SUM(fee_amount), 0)                                   AS fees
+      FROM transactions
+      WHERE created_at >= $1 AND status = 'completed'
+      GROUP BY DATE(created_at)
+      ORDER BY date ASC
+    `, [from]);
+    res.json(rows);
+  } catch (err) {
+    next(err);
+  }
+}
+
 async function getStellarNetworkStats(req, res, next) {
   try {
     const now = Date.now();
@@ -172,7 +194,7 @@ async function clawback(req, res, next) {
   }
 }
 
-module.exports = { getStats, getUsers, getTransactions, clawback };
+module.exports = { getStats, getUsers, getTransactions, getDailyTransactionStats, clawback };
 
 
 /**
@@ -671,6 +693,7 @@ module.exports = {
   getStats,
   getUsers,
   getTransactions,
+  getDailyTransactionStats,
   clawback,
   approveKYC,
   revokeKYC,

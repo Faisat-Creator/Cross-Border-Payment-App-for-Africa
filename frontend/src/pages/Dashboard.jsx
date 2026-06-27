@@ -21,6 +21,7 @@ import {
   X,
 } from 'lucide-react';
 import { useAuth } from '../context/AuthContext';
+import { useCurrency } from '../context/CurrencyContext';
 import { BalanceCardSkeleton, TransactionRowSkeleton } from '../components/Skeleton';
 import api from '../utils/api';
 import { truncateAddress } from '../utils/currency';
@@ -113,12 +114,13 @@ export default function Dashboard() {
   const wallet = wallets.find((w) => w.id === activeWalletId) || wallets[0] || null;
 
   const [transactions, setTransactions] = useState([]);
+  const [txError, setTxError] = useState(false);
   const [scheduledPayments, setScheduledPayments] = useState([]);
   const [scheduledLoading, setScheduledLoading] = useState(true);
   const [loading, setLoading] = useState(true);
   const [refreshing, setRefreshing] = useState(false);
   const [copied, setCopied] = useState(false);
-  const [selectedCurrency, setSelectedCurrency] = useState('XLM');
+  const { displayCurrency: selectedCurrency, setDisplayCurrency: setSelectedCurrency } = useCurrency();
   const [funding, setFunding] = useState(false);
   const [anchorLoading, setAnchorLoading] = useState(false);
   const [anchorAction, setAnchorAction] = useState(null);
@@ -126,6 +128,7 @@ export default function Dashboard() {
   const [fromCache, setFromCache] = useState(false);
   const [showZeroBalances, setShowZeroBalances] = useState(false);
   const [walletError, setWalletError] = useState(false);
+  const [transactionsError, setTransactionsError] = useState(false);
   const [queueCount, setQueueCount] = useState(0);
   const { currencies, convertFromXLM, usingApproximateRates } = useExchangeRates();
   const { isOnline } = useOnlineStatus();
@@ -208,10 +211,12 @@ export default function Dashboard() {
       setWallets(walletsData);
       setActiveWalletId((id) => id || walletsData[0]?.id || null);
       setTransactions(txData.slice(0, 5));
+      setTxError(false);
       setScheduledPayments((scheduledRes.data.payments || []).filter((p) => p.active).slice(0, 3));
       setScheduledLoading(false);
       setFromCache(false);
       setWalletError(walletsData.length === 0);
+      setTransactionsError(false);
 
       await Promise.all([setCacheEntry('wallets', walletsData), setCacheEntry('history', txData)]).catch(
         () => {}
@@ -230,6 +235,12 @@ export default function Dashboard() {
         }
         if (cachedHistory?.data) {
           setTransactions(cachedHistory.data.slice(0, 5));
+          setTxError(false);
+        } else {
+          setTxError(true);
+          setTransactionsError(false);
+        } else {
+          setTransactionsError(true);
         }
         if (!cachedWallets?.data) {
           setWallets([]);
@@ -241,6 +252,7 @@ export default function Dashboard() {
         setWallets([]);
         setActiveWalletId(null);
         setWalletError(true);
+        setTransactionsError(true);
         toast.error('Failed to load wallet data');
       }
     } finally {
@@ -733,13 +745,15 @@ export default function Dashboard() {
           )}
 
           {/* Fiat currency selector */}
-          <div className="flex gap-2 flex-wrap mb-3">
+          <div className="flex gap-2 flex-wrap mb-3" role="group" aria-label="Display currency">
             {currencies
               .filter((c) => c.code !== 'XLM')
               .map((c) => (
                 <button
                   key={c.code}
                   onClick={() => setSelectedCurrency(c.code)}
+                  aria-label={`Display in ${c.name}`}
+                  aria-pressed={selectedCurrency === c.code}
                   className={`text-xs px-2.5 py-1 rounded-full transition-colors ${
                     selectedCurrency === c.code
                       ? 'bg-white text-primary-700 font-semibold'
@@ -975,6 +989,70 @@ export default function Dashboard() {
         </div>
 
         {transactions.length === 0 ? (
+          <div className="bg-white dark:bg-gray-900 border border-gray-100 dark:border-gray-800 rounded-xl p-8 text-center shadow-sm">
+            <div className="w-16 h-16 bg-primary-500/10 rounded-full flex items-center justify-center mx-auto mb-4">
+              <Send size={28} className="text-primary-500" />
+            </div>
+            <h3 className="text-lg font-bold text-gray-900 dark:text-white mb-2">
+              No transactions yet
+            </h3>
+            <p className="text-gray-500 text-sm mb-6 max-w-xs mx-auto">
+              Send your first payment or add funds to get started with AfriPay.
+            </p>
+            <div className="flex gap-3 justify-center">
+              <button
+                onClick={() => navigate(`/send${activeWalletId ? `?wallet_id=${activeWalletId}` : ''}`)}
+                className="bg-primary-500 hover:bg-primary-600 text-white font-semibold py-2.5 px-5 rounded-xl text-sm transition-colors flex items-center gap-2"
+              >
+                <Send size={16} />
+                Send Money
+              </button>
+              <button
+                onClick={() => handleAnchorAction('deposit')}
+                disabled={anchorLoading}
+                className="bg-gray-100 dark:bg-gray-800 hover:bg-gray-200 dark:hover:bg-gray-700 text-gray-900 dark:text-white font-semibold py-2.5 px-5 rounded-xl text-sm transition-colors flex items-center gap-2 border border-gray-200 dark:border-gray-700"
+              >
+                <Plus size={16} />
+                Add Funds
+              </button>
+            </div>
+        {loading ? (
+          <div className="space-y-2" aria-busy="true" aria-label="Loading transactions">
+            <TransactionRowSkeleton />
+            <TransactionRowSkeleton />
+            <TransactionRowSkeleton />
+          </div>
+        ) : txError ? (
+          <div className="bg-white dark:bg-gray-900 border border-gray-100 dark:border-gray-800 rounded-xl p-6 text-center text-sm shadow-sm">
+            <p className="text-gray-500 mb-3">Failed to load transactions.</p>
+            <button
+              onClick={() => loadDashboard(false)}
+              className="text-primary-500 font-medium hover:underline"
+            >
+              {t('common.retry')}
+        {loading && transactions.length === 0 ? (
+          <div className="space-y-2" data-testid="transactions-skeleton" aria-hidden="true">
+            {[0, 1, 2].map((i) => (
+              <TransactionRowSkeleton key={i} />
+            ))}
+          </div>
+        ) : transactionsError && transactions.length === 0 ? (
+          <div
+            role="alert"
+            className="bg-red-500/10 border border-red-500/30 rounded-xl px-4 py-4 text-red-300 shadow-sm"
+          >
+            <p className="text-sm font-medium">Could not load recent activity.</p>
+            <button
+              type="button"
+              onClick={() => loadDashboard(true)}
+              disabled={refreshing}
+              className="mt-3 inline-flex items-center gap-2 rounded-lg bg-red-500/20 px-3 py-2 text-sm font-semibold text-red-100 hover:bg-red-500/30 disabled:opacity-50"
+            >
+              <RefreshCw size={14} className={refreshing ? 'animate-spin' : ''} />
+              Retry
+            </button>
+          </div>
+        ) : transactions.length === 0 ? (
           <div className="bg-white dark:bg-gray-900 border border-gray-100 dark:border-gray-800 rounded-xl p-6 text-center text-gray-500 text-sm shadow-sm">
             {t('dashboard.no_transactions')}
           </div>

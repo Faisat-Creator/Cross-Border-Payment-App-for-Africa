@@ -9,6 +9,8 @@ import yo from './locales/yo/translation.json';
 const savedLanguage = typeof window !== 'undefined' ? localStorage.getItem('afripay_lang') : null;
 const initialLanguage = savedLanguage || 'en';
 
+const RTL_LOCALES = ['ar'];
+
 i18n.use(initReactI18next).init({
   resources: {
     en: { translation: en },
@@ -21,5 +23,13 @@ i18n.use(initReactI18next).init({
   fallbackLng: 'en',
   interpolation: { escapeValue: false }
 });
+
+i18n.on('languageChanged', (lng) => {
+  document.documentElement.dir = RTL_LOCALES.includes(lng) ? 'rtl' : 'ltr';
+});
+
+if (typeof document !== 'undefined') {
+  document.documentElement.dir = RTL_LOCALES.includes(i18n.language) ? 'rtl' : 'ltr';
+}
 
 export default i18n;

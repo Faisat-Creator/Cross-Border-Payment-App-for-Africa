@@ -1,10 +1,11 @@
 import React, { useState, useEffect } from 'react';
 import { useNavigate } from 'react-router-dom';
-import { ArrowLeft, Plus, Trash2, Edit2 } from 'lucide-react';
+import { ArrowLeft, Plus, Trash2, Edit2, List, Calendar } from 'lucide-react';
 import api from '../utils/api';
 import toast from 'react-hot-toast';
 import { useTranslation } from 'react-i18next';
 import { CURRENCIES } from '../utils/currency';
+import ScheduledPaymentsCalendar from '../components/ScheduledPaymentsCalendar';
 
 export default function ScheduledPayments() {
   const navigate = useNavigate();
@@ -12,6 +13,7 @@ export default function ScheduledPayments() {
   const [payments, setPayments] = useState([]);
   const [loading, setLoading] = useState(true);
   const [showForm, setShowForm] = useState(false);
+  const [view, setView] = useState('list'); // 'list' | 'calendar'
   const [form, setForm] = useState({
     recipient_wallet: '',
     amount: '',
@@ -160,7 +162,29 @@ export default function ScheduledPayments() {
         </form>
       )}
 
-      {payments.length === 0 ? (
+      {/* View toggle: List ↔ Calendar (issue #654) */}
+      <div className="flex items-center gap-1 bg-gray-900 rounded-lg p-1 mb-4 w-fit">
+        <button
+          onClick={() => setView('list')}
+          className={`flex items-center gap-1.5 px-3 py-1.5 rounded-md text-sm font-medium transition-colors ${
+            view === 'list' ? 'bg-primary-500 text-white' : 'text-gray-400 hover:text-white'
+          }`}
+        >
+          <List size={15} /> {t('scheduled.list_view') || 'List View'}
+        </button>
+        <button
+          onClick={() => setView('calendar')}
+          className={`flex items-center gap-1.5 px-3 py-1.5 rounded-md text-sm font-medium transition-colors ${
+            view === 'calendar' ? 'bg-primary-500 text-white' : 'text-gray-400 hover:text-white'
+          }`}
+        >
+          <Calendar size={15} /> {t('scheduled.calendar_view') || 'Calendar View'}
+        </button>
+      </div>
+
+      {view === 'calendar' ? (
+        <ScheduledPaymentsCalendar payments={payments} />
+      ) : payments.length === 0 ? (
         <p className="text-gray-400 text-center py-8">{t('scheduled.none') || 'No scheduled payments'}</p>
       ) : (
         <div className="space-y-3">

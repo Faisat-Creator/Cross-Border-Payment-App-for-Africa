@@ -3,6 +3,9 @@ use soroban_sdk::{contract, contractimpl, contracttype, token, Address, BytesN, 
 
 mod test;
 
+/// Semantic version of this contract. Bumped on every upgrade.
+pub const CONTRACT_VERSION: u32 = 1;
+
 #[derive(Clone)]
 #[contracttype]
 pub struct EscrowCreated {
@@ -20,6 +23,16 @@ pub struct EscrowReleased {
     pub escrow_id: u64,
     pub agent_amount: i128,
     pub fee_amount: i128,
+}
+
+#[derive(Clone)]
+#[contracttype]
+pub struct EscrowPartiallyReleased {
+    pub escrow_id: u64,
+    pub released_amount: i128,
+    pub agent_amount: i128,
+    pub fee_amount: i128,
+    pub remaining_amount: i128,
 }
 
 #[derive(Clone)]
@@ -55,6 +68,7 @@ pub struct EscrowArchived {
 #[contracttype]
 pub struct Upgraded {
     pub new_wasm_hash: BytesN<32>,
+    pub contract_version: u32,
 }
 
 #[derive(Clone, Debug)]
@@ -193,7 +207,10 @@ impl EscrowContract {
 
         env.events().publish(
             (Symbol::new(&env, "Upgraded"),),
-            Upgraded { new_wasm_hash },
+            Upgraded {
+                new_wasm_hash,
+                contract_version: CONTRACT_VERSION,
+            },
         );
     }
 
@@ -567,6 +584,51 @@ impl EscrowContract {
             EscrowCancelled {
                 escrow_id,
                 refund_amount: escrow.amount,
+            },
+        );
+    }
+
+    /// Permissionless auto-refund triggered by anyone once the escrow expiry timestamp
+    /// has passed. Refunds the full remaining balance to the original sender.
+    pub fn expire_escrow(env: Env, escrow_id: u64) {
+        let mut escrow: Escrow = env
+            .storage()
+            .persistent()
+            .get(&DataKey::Escrow(escrow_id))
+            .unwrap_or_else(|| panic!("Escrow {} not found", escrow_id));
+
+        if escrow.status != EscrowStatus::Pending {
+            panic!("Escrow is not in pending state");
+        }
+
+        let now = env.ledger().timestamp();
+        if now < escrow.expires_at {
+            panic!("Escrow has not expired yet");
+        }
+
+        let usdc_address: Address = env
+            .storage()
+            .persistent()
+            .get(&DataKey::UsdcAddress)
+            .expect("Contract not initialized");
+
+        token::Client::new(&env, &usdc_address).transfer(
+            &env.current_contract_address(),
+            &escrow.sender,
+            &escrow.amount,
+        );
+
+        escrow.status = EscrowStatus::Cancelled;
+        env.storage()
+            .persistent()
+            .set(&DataKey::Escrow(escrow_id), &escrow);
+
+        env.events().publish(
+            (Symbol::new(&env, "EscrowExpired"),),
+            EscrowExpired {
+                escrow_id,
+                refund_amount: escrow.amount,
+                expired_at: now,
             },
         );
     }

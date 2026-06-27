@@ -386,7 +386,7 @@ async function verifyPhone(req, res, next) {
 async function getMe(req, res, next) {
   try {
     const result = await db.query(
-      `SELECT u.id, u.full_name, u.email, u.email_verified, u.phone, u.phone_verified, u.pin_setup_completed, u.totp_enabled, u.account_type, w.public_key
+      `SELECT u.id, u.full_name, u.email, u.email_verified, u.phone, u.phone_verified, u.pin_setup_completed, u.totp_enabled, u.account_type, u.avatar_url, w.public_key
        FROM users u LEFT JOIN wallets w ON w.user_id = u.id
        WHERE u.id = $1`,
       [req.user.userId]
@@ -404,6 +404,7 @@ async function getMe(req, res, next) {
       pin_setup_completed: u.pin_setup_completed,
       totp_enabled: u.totp_enabled,
       account_type: u.account_type,
+      avatar_url: u.avatar_url || null,
     });
   } catch (err) {
     next(err);
@@ -817,6 +818,57 @@ async function getActivity(req, res, next) {
   }
 }
 
+// Magic-bytes signatures for allowed image types
+const IMAGE_MAGIC = [
+  { mime: 'image/jpeg', bytes: [0xff, 0xd8, 0xff] },
+  { mime: 'image/png',  bytes: [0x89, 0x50, 0x4e, 0x47] },
+  { mime: 'image/webp', bytes: null, check: (b) => b[0]===0x52&&b[1]===0x49&&b[2]===0x46&&b[3]===0x46&&b[8]===0x57&&b[9]===0x45&&b[10]===0x42&&b[11]===0x50 },
+];
+
+function detectMime(buffer) {
+  for (const sig of IMAGE_MAGIC) {
+    if (sig.check) { if (buffer.length >= 12 && sig.check(buffer)) return sig.mime; }
+    else if (buffer.slice(0, sig.bytes.length).every((b, i) => b === sig.bytes[i])) return sig.mime;
+  }
+  return null;
+}
+
+async function uploadAvatar(req, res, next) {
+  try {
+    if (!req.file) return res.status(400).json({ error: 'No file uploaded' });
+
+    const mime = detectMime(req.file.buffer);
+    if (!mime) {
+      return res.status(400).json({ error: 'Invalid file type. Only JPEG, PNG, and WebP are accepted.' });
+    }
+
+    const ext = mime === 'image/jpeg' ? 'jpg' : mime === 'image/webp' ? 'webp' : 'png';
+    const filename = `${req.user.userId}_${Date.now()}.${ext}`;
+
+    const path = require('path');
+    const fs = require('fs');
+    const dir = path.join(__dirname, '../../uploads/avatars');
+    fs.mkdirSync(dir, { recursive: true });
+
+    // Delete old avatar file if it exists
+    const old = await db.query('SELECT avatar_url FROM users WHERE id = $1', [req.user.userId]);
+    const oldUrl = old.rows[0]?.avatar_url;
+    if (oldUrl) {
+      const oldFile = path.join(dir, path.basename(oldUrl));
+      fs.unlink(oldFile, () => {});
+    }
+
+    fs.writeFileSync(path.join(dir, filename), req.file.buffer);
+
+    const avatarUrl = `/uploads/avatars/${filename}`;
+    await db.query('UPDATE users SET avatar_url = $1 WHERE id = $2', [avatarUrl, req.user.userId]);
+
+    res.json({ avatar_url: avatarUrl });
+  } catch (err) {
+    next(err);
+  }
+}
+
 module.exports = { register, login, verifyEmail, getMe, setPIN, verifyPIN };
 module.exports = {
   register,
@@ -830,6 +882,7 @@ module.exports = {
   changeEmail,
   verifyEmailChange,
   getActivity,
+  uploadAvatar,
   setPIN,
   verifyPIN,
   setup2FA,

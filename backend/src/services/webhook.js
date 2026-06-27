@@ -71,17 +71,45 @@ function httpsPost(url, body, signature) {
   });
 }
 
-async function deliverWithRetry(url, secret, payload, attempt = 0) {
+async function createDeliveryLog(webhookId, eventType, targetUrl, attempt, maxAttempts, payload) {
+  const { rows } = await db.query(
+    `INSERT INTO webhook_deliveries (webhook_id, event_type, target_url, status, attempt, max_attempts, payload)
+     VALUES ($1, $2, $3, 'pending', $4, $5, $6)
+     RETURNING id`,
+    [webhookId, eventType, targetUrl, attempt, maxAttempts, JSON.stringify(payload)]
+  );
+  return rows[0].id;
+}
+
+async function updateDeliveryLog(deliveryId, status, statusCode, responseTimeMs, errorMessage) {
+  await db.query(
+    `UPDATE webhook_deliveries
+     SET status = $1, status_code = $2, response_time_ms = $3, error_message = $4, completed_at = NOW()
+     WHERE id = $5`,
+    [status, statusCode || null, responseTimeMs || null, errorMessage || null, deliveryId]
+  );
+}
+
+async function deliverWithRetry(webhookId, url, secret, payload, attempt = 0) {
   // Re-validate URL before each delivery to catch DNS rebinding / stale records
   if (!await isPublicHttpsUrl(url)) {
     logger.error('Webhook delivery blocked: URL failed SSRF validation', { url });
+    await createDeliveryLog(webhookId, payload.event, url, attempt + 1, MAX_ATTEMPTS, payload)
+      .then((id) => updateDeliveryLog(id, 'failed', null, null, 'SSRF validation failed'));
     return;
   }
   const body = JSON.stringify(payload);
   const signature = sign(secret, body);
+  const deliveryId = await createDeliveryLog(webhookId, payload.event, url, attempt + 1, MAX_ATTEMPTS, payload);
+  const start = Date.now();
   try {
-    await httpsPost(url, body, signature);
+    const statusCode = await httpsPost(url, body, signature);
+    const responseTime = Date.now() - start;
+    await updateDeliveryLog(deliveryId, 'delivered', statusCode, responseTime, null);
   } catch (err) {
+    const responseTime = Date.now() - start;
+    const statusCodeMatch = err.message.match(/HTTP (\d+)/);
+    const statusCode = statusCodeMatch ? parseInt(statusCodeMatch[1]) : null;
     if (attempt < MAX_ATTEMPTS - 1) {
       const delay = Math.pow(2, attempt) * 1000;
       logger.warn('Webhook delivery failed, retrying', {
@@ -92,9 +120,10 @@ async function deliverWithRetry(url, secret, payload, attempt = 0) {
         error: err.message,
       });
       await new Promise((r) => setTimeout(r, delay));
-      return deliverWithRetry(url, secret, payload, attempt + 1);
+      return deliverWithRetry(webhookId, url, secret, payload, attempt + 1);
     }
-    // All attempts exhausted — log a persistent error so operators can investigate
+    // All attempts exhausted
+    await updateDeliveryLog(deliveryId, 'failed', statusCode, responseTime, err.message);
     logger.error('Webhook delivery permanently failed after max retries', {
       url,
       event: payload.event,
@@ -104,9 +133,23 @@ async function deliverWithRetry(url, secret, payload, attempt = 0) {
   }
 }
 
+async function retryDelivery(deliveryId) {
+  const { rows } = await db.query(
+    `SELECT wd.webhook_id, wd.target_url, wd.payload, wd.event_type, w.url, w.secret
+     FROM webhook_deliveries wd
+     JOIN webhooks w ON w.id = wd.webhook_id
+     WHERE wd.id = $1 AND wd.status = 'failed'`,
+    [deliveryId]
+  );
+  if (!rows.length) throw new Error('Delivery not found or not failed');
+  const { url, secret, payload, event_type } = rows[0];
+  const parsedPayload = typeof payload === 'string' ? JSON.parse(payload) : payload;
+  await deliverWithRetry(null, url, secret, { ...parsedPayload, event: event_type });
+}
+
 async function deliver(event, data) {
   const { rows } = await db.query(
-    `SELECT url, secret FROM webhooks WHERE active = true AND $1 = ANY(events)`,
+    `SELECT id, url, secret FROM webhooks WHERE active = true AND $1 = ANY(events)`,
     [event]
   );
   const timestamp = Math.floor(Date.now() / 1000);
@@ -117,4 +160,4 @@ async function deliver(event, data) {
   }));
 }
 
-module.exports = { deliver, sign, MAX_ATTEMPTS };
+module.exports = { deliver, sign, retryDelivery, MAX_ATTEMPTS };
