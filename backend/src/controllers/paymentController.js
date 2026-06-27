@@ -112,6 +112,12 @@ async function ensureKycIfNeeded(userId, amount, asset) {
 
   const kycResult = await db.query("SELECT kyc_status FROM users WHERE id = $1", [userId]);
   const kycStatus = kycResult.rows[0]?.kyc_status || "unverified";
+  if (kycStatus === "expired") {
+    const err = new Error("Your identity document has expired. Please re-verify to continue.");
+    err.status = 403;
+    err.payload = { kyc_status: kycStatus, code: "KYC_EXPIRED" };
+    throw err;
+  }
   if (kycStatus !== "verified") {
     const err = new Error(
       `KYC verification required for transactions above $${KYC_THRESHOLD_USD} USD equivalent.`,
@@ -182,11 +188,7 @@ async function getFeeStats(req, res, next) {
 async function send(req, res, next) {
   const txId = uuidv4();
   // declare these in outer scope so the catch block can reference them safely
-  let public_key, encrypted_secret_key, recipient_address, amount, asset, memo;
-  try {
-    ({ recipient_address, amount, asset = "XLM", memo } = req.body);
-  let public_key;
-  let recipient_address, amount, asset, memo, memo_type;
+  let public_key, encrypted_secret_key, recipient_address, amount, asset, memo, memo_type;
 
   try {
     ({
@@ -221,13 +223,23 @@ async function send(req, res, next) {
         });
       }
 
-      if (kycStatus !== "verified" && estimatedUSD >= KYC_THRESHOLD_USD) {
-        webhook.deliver("payment.failed", { code: "KYC_REQUIRED", error: "KYC verification required for transactions above $" + KYC_THRESHOLD_USD + " USD equivalent." }).catch(() => {});
-        return res.status(403).json({
-          error: "KYC verification required for transactions above $" + KYC_THRESHOLD_USD + " USD equivalent.",
-          kyc_status: kycStatus,
-          code: "KYC_REQUIRED",
-        });
+      if (estimatedUSD >= KYC_THRESHOLD_USD) {
+        if (kycStatus === "expired") {
+          webhook.deliver("payment.failed", { code: "KYC_EXPIRED", error: "Your identity document has expired. Please re-verify to continue." }).catch(() => {});
+          return res.status(403).json({
+            error: "Your identity document has expired. Please re-verify to continue.",
+            kyc_status: kycStatus,
+            code: "KYC_EXPIRED",
+          });
+        }
+        if (kycStatus !== "verified") {
+          webhook.deliver("payment.failed", { code: "KYC_REQUIRED", error: "KYC verification required for transactions above $" + KYC_THRESHOLD_USD + " USD equivalent." }).catch(() => {});
+          return res.status(403).json({
+            error: "KYC verification required for transactions above $" + KYC_THRESHOLD_USD + " USD equivalent.",
+            kyc_status: kycStatus,
+            code: "KYC_REQUIRED",
+          });
+        }
       }
     }
 
@@ -248,8 +260,6 @@ async function send(req, res, next) {
     if (!walletResult.rows[0]) return res.status(404).json({ error: "Wallet not found" });
 
     ({ public_key, encrypted_secret_key } = walletResult.rows[0]);
-    ({ public_key } = walletResult.rows[0]);
-    const { encrypted_secret_key } = walletResult.rows[0];
 
     if (recipient_address === public_key) {
       return res.status(400).json({ error: "Cannot send payment to your own wallet" });
@@ -384,6 +394,7 @@ async function send(req, res, next) {
     if (err.status === 400 || err.status === 500) {
       webhook.deliver('payment.failed', { error: err.message }).catch(() => {});
       return res.status(err.status).json({ error: err.message });
+    }
     // Issue #243: Insert a failed transaction record when sendPayment throws
     // and the sender wallet is known, to maintain a full audit trail.
     if (public_key) {
@@ -675,8 +686,13 @@ async function sendPath(req, res, next) {
       if (!phoneVerified) {
         return res.status(403).json({ error: `Phone verification required for transactions above $${PHONE_VERIFICATION_THRESHOLD_USD} USD equivalent.`, phone_verified: false, code: "PHONE_VERIFICATION_REQUIRED" });
       }
-      if (kycStatus !== "verified" && estimatedUSD >= KYC_THRESHOLD_USD) {
-        return res.status(403).json({ error: `KYC verification required for transactions above $${KYC_THRESHOLD_USD} USD equivalent.`, kyc_status: kycStatus, code: "KYC_REQUIRED" });
+      if (estimatedUSD >= KYC_THRESHOLD_USD) {
+        if (kycStatus === "expired") {
+          return res.status(403).json({ error: "Your identity document has expired. Please re-verify to continue.", kyc_status: kycStatus, code: "KYC_EXPIRED" });
+        }
+        if (kycStatus !== "verified") {
+          return res.status(403).json({ error: `KYC verification required for transactions above $${KYC_THRESHOLD_USD} USD equivalent.`, kyc_status: kycStatus, code: "KYC_REQUIRED" });
+        }
       }
     }
 
@@ -778,8 +794,13 @@ async function sendStrictReceivePath(req, res, next) {
       if (!phoneVerified) {
         return res.status(403).json({ error: `Phone verification required for transactions above $${PHONE_VERIFICATION_THRESHOLD_USD} USD equivalent.`, phone_verified: false, code: "PHONE_VERIFICATION_REQUIRED" });
       }
-      if (kycStatus !== "verified" && estimatedUSD >= KYC_THRESHOLD_USD) {
-        return res.status(403).json({ error: `KYC verification required for transactions above ${KYC_THRESHOLD_USD} USD equivalent.`, kyc_status: kycStatus, code: "KYC_REQUIRED" });
+      if (estimatedUSD >= KYC_THRESHOLD_USD) {
+        if (kycStatus === "expired") {
+          return res.status(403).json({ error: "Your identity document has expired. Please re-verify to continue.", kyc_status: kycStatus, code: "KYC_EXPIRED" });
+        }
+        if (kycStatus !== "verified") {
+          return res.status(403).json({ error: `KYC verification required for transactions above ${KYC_THRESHOLD_USD} USD equivalent.`, kyc_status: kycStatus, code: "KYC_REQUIRED" });
+        }
       }
     }
 

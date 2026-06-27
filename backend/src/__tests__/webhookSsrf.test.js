@@ -8,6 +8,10 @@ jest.mock('../middleware/auth', () => (req, res, next) => {
   req.user = { userId: 'user-test-id' };
   next();
 });
+jest.mock('../utils/symmetricEncryption', () => ({
+  encryptSecret: (s) => `enc:${s}`,
+  decryptSecret: (s) => s.replace(/^enc:/, ''),
+}));
 
 // Mock dns.lookup so tests don't make real network calls
 jest.mock('dns', () => ({

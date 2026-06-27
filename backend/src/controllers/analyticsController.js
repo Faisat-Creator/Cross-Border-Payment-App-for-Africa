@@ -76,6 +76,97 @@ exports.summary = async (req, res) => {
   }
 };
 
+exports.volume = async (req, res) => {
+  try {
+    const now = new Date();
+    const defaultFrom = new Date(now);
+    defaultFrom.setDate(defaultFrom.getDate() - 30);
+
+    const from = req.query.from ? new Date(req.query.from) : defaultFrom;
+    const to = req.query.to ? new Date(req.query.to) : now;
+
+    if (isNaN(from.getTime()) || isNaN(to.getTime())) {
+      return res.status(400).json({ error: 'Invalid date format; use ISO 8601 (e.g. YYYY-MM-DD)' });
+    }
+    if (from > to) {
+      return res.status(400).json({ error: 'from must be before or equal to to' });
+    }
+
+    const rangeDays = Math.ceil((to - from) / (1000 * 60 * 60 * 24));
+
+    let rows;
+
+    if (rangeDays > 7) {
+      // Use the pre-aggregated materialized view for longer ranges to avoid full table scans
+      const result = await db.query(
+        `WITH date_range AS (
+           SELECT generate_series($1::date, $2::date, '1 day'::interval)::date AS day
+         ),
+         asset_list AS (
+           SELECT DISTINCT asset FROM daily_payment_aggregates
+            WHERE day >= $1::date AND day <= $2::date
+         ),
+         base AS (
+           SELECT dr.day, al.asset FROM date_range dr CROSS JOIN asset_list al
+         )
+         SELECT
+           b.day,
+           b.asset,
+           COALESCE(a.tx_count, 0)    AS tx_count,
+           COALESCE(a.total_amount, 0) AS total_amount,
+           COALESCE(a.avg_amount, 0)   AS avg_amount
+         FROM base b
+         LEFT JOIN daily_payment_aggregates a ON a.day = b.day AND a.asset = b.asset
+         ORDER BY b.day ASC, b.asset`,
+        [from, to],
+      );
+      rows = result.rows;
+    } else {
+      // Live query for short ranges (≤ 7 days); generate_series fills zero-count days
+      const result = await db.query(
+        `WITH date_range AS (
+           SELECT generate_series($1::date, $2::date, '1 day'::interval)::date AS day
+         ),
+         asset_list AS (
+           SELECT DISTINCT asset FROM transactions
+            WHERE created_at >= $1 AND created_at <= $2 AND status = 'completed'
+         ),
+         base AS (
+           SELECT dr.day, al.asset FROM date_range dr CROSS JOIN asset_list al
+         ),
+         agg AS (
+           SELECT DATE(created_at) AS day, asset,
+                  COUNT(*)         AS tx_count,
+                  SUM(amount)      AS total_amount,
+                  AVG(amount)      AS avg_amount
+             FROM transactions
+            WHERE created_at >= $1 AND created_at <= $2 AND status = 'completed'
+            GROUP BY DATE(created_at), asset
+         )
+         SELECT
+           b.day,
+           b.asset,
+           COALESCE(a.tx_count, 0)    AS tx_count,
+           COALESCE(a.total_amount, 0) AS total_amount,
+           COALESCE(a.avg_amount, 0)   AS avg_amount
+         FROM base b
+         LEFT JOIN agg a ON a.day = b.day AND a.asset = b.asset
+         ORDER BY b.day ASC, b.asset`,
+        [from, to],
+      );
+      rows = result.rows;
+    }
+
+    res.json({
+      period: { from: from.toISOString(), to: to.toISOString() },
+      range_days: rangeDays,
+      volume: rows,
+    });
+  } catch (err) {
+    res.status(500).json({ error: err.message });
+  }
+};
+
 exports.fees = async (req, res) => {
   try {
     const now = new Date();
