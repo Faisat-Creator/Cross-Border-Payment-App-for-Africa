@@ -40,10 +40,10 @@ pub enum DataKey {
     Admin,
     TokenAddress,
     InterestRateBps,
+    PenaltyBps,
     Vault(Address),
 }
 
-const EARLY_WITHDRAWAL_PENALTY_BPS: u32 = 1000;
 const SECONDS_PER_YEAR: u64 = 31_536_000;
 
 #[contract]
@@ -51,12 +51,13 @@ pub struct SavingsVaultContract;
 
 #[contractimpl]
 impl SavingsVaultContract {
-    pub fn initialize(env: Env, admin: Address, token_address: Address) {
+    pub fn initialize(env: Env, admin: Address, token_address: Address, penalty_bps: u32) {
         if env.storage().persistent().has(&DataKey::TokenAddress) {
             panic!("Contract already initialized");
         }
         env.storage().persistent().set(&DataKey::Admin, &admin);
         env.storage().persistent().set(&DataKey::TokenAddress, &token_address);
+        env.storage().persistent().set(&DataKey::PenaltyBps, &penalty_bps);
     }
 
     /// Set the annual interest rate. Only admin may call this.
@@ -130,6 +131,8 @@ impl SavingsVaultContract {
         );
     }
 
+    /// Deposit tokens into the vault. Accumulates on top of any existing balance.
+    /// Extends the unlock time only if the new unlock_time is later than the current one.
     pub fn deposit(env: Env, user: Address, amount: i128, unlock_time: u64) {
         user.require_auth();
         if amount <= 0 {
@@ -204,9 +207,15 @@ impl SavingsVaultContract {
             .get(&DataKey::TokenAddress)
             .unwrap();
 
+        let penalty_bps: u32 = env
+            .storage()
+            .persistent()
+            .get(&DataKey::PenaltyBps)
+            .unwrap_or(1000);
+
         let now = env.ledger().timestamp();
         let penalty = if now < vault.unlock_time {
-            (amount * EARLY_WITHDRAWAL_PENALTY_BPS as i128) / 10000
+            (amount * penalty_bps as i128) / 10000
         } else {
             0
         };
@@ -248,5 +257,17 @@ impl SavingsVaultContract {
             .get(&DataKey::Vault(user))
             .map(|v: Vault| v.unlock_time)
             .unwrap_or(0)
+    }
+
+    /// Returns the full vault state for a user, or a zero-valued Vault if none exists.
+    pub fn get_vault(env: Env, user: Address) -> Vault {
+        env.storage()
+            .persistent()
+            .get(&DataKey::Vault(user))
+            .unwrap_or(Vault {
+                balance: 0,
+                unlock_time: 0,
+                last_accrue_time: 0,
+            })
     }
 }

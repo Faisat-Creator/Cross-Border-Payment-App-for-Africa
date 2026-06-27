@@ -15,7 +15,7 @@ fn setup() -> (Env, SavingsVaultContractClient<'static>, Address, Address) {
     let client = SavingsVaultContractClient::new(&env, &contract_id);
     let admin = Address::generate(&env);
     let usdc_id = env.register_stellar_asset_contract_v2(admin.clone()).address();
-    client.initialize(&admin, &usdc_id);
+    client.initialize(&admin, &usdc_id, &1000u32);
     (env, client, admin, usdc_id)
 }
 
@@ -34,7 +34,7 @@ fn test_initialize() {
 #[should_panic(expected = "Contract already initialized")]
 fn test_double_initialize() {
     let (_, client, admin, usdc_id) = setup();
-    client.initialize(&admin, &usdc_id);
+    client.initialize(&admin, &usdc_id, &1000u32);
 }
 
 #[test]
@@ -109,6 +109,55 @@ fn test_early_withdrawal_with_penalty() {
     assert_eq!(TokenClient::new(&env, &usdc_id).balance(&user), expected_withdrawal);
 }
 
+// ── #547: configurable penalty ────────────────────────────────────────────────
+
+#[test]
+fn test_configurable_penalty_bps() {
+    let env = Env::default();
+    env.mock_all_auths();
+    let contract_id = env.register_contract(None, SavingsVaultContract);
+    let client = SavingsVaultContractClient::new(&env, &contract_id);
+    let admin = Address::generate(&env);
+    let usdc_id = env.register_stellar_asset_contract_v2(admin.clone()).address();
+
+    client.initialize(&admin, &usdc_id, &500u32); // 5% penalty
+
+    let user = Address::generate(&env);
+    let amount = 1_000_0000000i128;
+    let unlock_time = env.ledger().timestamp() + 86400;
+
+    StellarAssetClient::new(&env, &usdc_id).mint(&user, &amount);
+    client.deposit(&user, &amount, &unlock_time);
+    client.withdraw(&user, &amount);
+
+    let expected_penalty = (amount * 500) / 10000;
+    let expected_withdrawal = amount - expected_penalty;
+
+    assert_eq!(TokenClient::new(&env, &usdc_id).balance(&user), expected_withdrawal);
+}
+
+#[test]
+fn test_zero_penalty_bps_no_penalty_on_early_withdrawal() {
+    let env = Env::default();
+    env.mock_all_auths();
+    let contract_id = env.register_contract(None, SavingsVaultContract);
+    let client = SavingsVaultContractClient::new(&env, &contract_id);
+    let admin = Address::generate(&env);
+    let usdc_id = env.register_stellar_asset_contract_v2(admin.clone()).address();
+
+    client.initialize(&admin, &usdc_id, &0u32); // 0% penalty
+
+    let user = Address::generate(&env);
+    let amount = 1_000_0000000i128;
+    let unlock_time = env.ledger().timestamp() + 86400;
+
+    StellarAssetClient::new(&env, &usdc_id).mint(&user, &amount);
+    client.deposit(&user, &amount, &unlock_time);
+    client.withdraw(&user, &amount);
+
+    assert_eq!(TokenClient::new(&env, &usdc_id).balance(&user), amount);
+}
+
 #[test]
 #[should_panic(expected = "Insufficient balance")]
 fn test_withdraw_more_than_balance() {
@@ -132,6 +181,8 @@ fn test_withdraw_no_vault() {
     client.withdraw(&user, &1_000_0000000);
 }
 
+// ── #549: multi-deposit ───────────────────────────────────────────────────────
+
 #[test]
 fn test_multiple_deposits() {
     let (env, client, admin, usdc_id) = setup();
@@ -148,6 +199,49 @@ fn test_multiple_deposits() {
 
     assert_eq!(client.get_balance(&user), amount1 + amount2);
     assert_eq!(client.get_unlock_time(&user), unlock_time2);
+}
+
+#[test]
+fn test_second_deposit_with_earlier_unlock_preserves_later_time() {
+    let (env, client, admin, usdc_id) = setup();
+    let user = Address::generate(&env);
+    let amount1 = 500_0000000i128;
+    let amount2 = 300_0000000i128;
+    let unlock_time1 = env.ledger().timestamp() + 7200;
+    let unlock_time2 = env.ledger().timestamp() + 3600; // earlier than first
+
+    mint_usdc(&env, &usdc_id, &admin, &user, amount1 + amount2);
+
+    client.deposit(&user, &amount1, &unlock_time1);
+    client.deposit(&user, &amount2, &unlock_time2);
+
+    assert_eq!(client.get_balance(&user), amount1 + amount2);
+    assert_eq!(client.get_unlock_time(&user), unlock_time1); // original later time preserved
+}
+
+#[test]
+fn test_get_vault_returns_full_info() {
+    let (env, client, admin, usdc_id) = setup();
+    let user = Address::generate(&env);
+    let amount = 1_000_0000000i128;
+    let unlock_time = env.ledger().timestamp() + 86400;
+
+    mint_usdc(&env, &usdc_id, &admin, &user, amount);
+    client.deposit(&user, &amount, &unlock_time);
+
+    let vault = client.get_vault(&user);
+    assert_eq!(vault.balance, amount);
+    assert_eq!(vault.unlock_time, unlock_time);
+}
+
+#[test]
+fn test_get_vault_no_deposit_returns_zeros() {
+    let (_, client, _, _) = setup();
+    let user = Address::generate(&client.env());
+    let vault = client.get_vault(&user);
+    assert_eq!(vault.balance, 0);
+    assert_eq!(vault.unlock_time, 0);
+    assert_eq!(vault.last_accrue_time, 0);
 }
 
 #[test]
