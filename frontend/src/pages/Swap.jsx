@@ -1,5 +1,5 @@
-import React, { useEffect, useState, useCallback } from 'react';
-import { ArrowUpDown, AlertTriangle, CheckCircle2 } from 'lucide-react';
+import React, { useEffect, useState, useCallback, useRef } from 'react';
+import { ArrowUpDown, AlertTriangle, CheckCircle2, Settings } from 'lucide-react';
 import api from '../utils/api';
 import toast from 'react-hot-toast';
 
@@ -11,6 +11,15 @@ const PAIRS = [
 // Price impact is considered high above this threshold (%)
 const HIGH_IMPACT_PCT = 2;
 
+const SLIPPAGE_PRESETS = [0.1, 0.5, 1.0];
+const DEFAULT_SLIPPAGE = 0.5;
+const SLIPPAGE_STORAGE_KEY = 'afripay_swap_slippage';
+
+function getSavedSlippage() {
+  const v = parseFloat(localStorage.getItem(SLIPPAGE_STORAGE_KEY));
+  return isNaN(v) || v <= 0 ? DEFAULT_SLIPPAGE : v;
+}
+
 export default function Swap() {
   const [sellAsset, setSellAsset] = useState('XLM');
   const [buyAsset, setBuyAsset] = useState('USDC');
@@ -19,6 +28,34 @@ export default function Swap() {
   const [quoteLoading, setQuoteLoading] = useState(false);
   const [submitting, setSubmitting] = useState(false);
   const [result, setResult] = useState(null);
+  const [slippage, setSlippage] = useState(getSavedSlippage);
+  const [customSlippage, setCustomSlippage] = useState('');
+  const [showSlippagePopover, setShowSlippagePopover] = useState(false);
+  const slippagePopoverRef = useRef(null);
+
+  const minReceived = quote?.estimatedReceived
+    ? (parseFloat(quote.estimatedReceived) * (1 - slippage / 100)).toFixed(7)
+    : null;
+
+  const applySlippage = (value) => {
+    const v = parseFloat(value);
+    if (!isNaN(v) && v > 0) {
+      setSlippage(v);
+      localStorage.setItem(SLIPPAGE_STORAGE_KEY, String(v));
+    }
+  };
+
+  // Close slippage popover on outside click
+  useEffect(() => {
+    if (!showSlippagePopover) return;
+    const handler = (e) => {
+      if (slippagePopoverRef.current && !slippagePopoverRef.current.contains(e.target)) {
+        setShowSlippagePopover(false);
+      }
+    };
+    document.addEventListener('mousedown', handler);
+    return () => document.removeEventListener('mousedown', handler);
+  }, [showSlippagePopover]);
 
   const flipPair = () => {
     setSellAsset(buyAsset);
@@ -71,13 +108,19 @@ export default function Swap() {
         sell_asset: sellAsset,
         sell_amount: parseFloat(sellAmount),
         buy_asset: buyAsset,
+        min_received: minReceived ? parseFloat(minReceived) : undefined,
       });
       setResult(res.data);
       setSellAmount('');
       setQuote(null);
       toast.success('Swap executed successfully');
     } catch (err) {
-      toast.error(err.response?.data?.error || err.response?.data?.errors?.[0]?.msg || 'Swap failed');
+      const errCode = err.response?.data?.code;
+      if (errCode === 'PRICE_MOVED' || errCode === 'SLIPPAGE_EXCEEDED') {
+        toast.error('Price moved too much. Increase your slippage tolerance and try again.');
+      } else {
+        toast.error(err.response?.data?.error || err.response?.data?.errors?.[0]?.msg || 'Swap failed');
+      }
     } finally {
       setSubmitting(false);
     }
@@ -89,15 +132,73 @@ export default function Swap() {
     <div className="px-4 py-6 max-w-lg mx-auto space-y-5">
       <h2 className="text-2xl font-bold text-gray-900 dark:text-white">Swap</h2>
 
-      {/* Rate display */}
-      {quote?.midPrice && (
-        <div className="bg-primary-500/10 border border-primary-500/20 rounded-xl px-4 py-2.5 flex items-center justify-between text-sm">
-          <span className="text-gray-500 dark:text-gray-400">DEX rate</span>
-          <span className="font-semibold text-gray-900 dark:text-white">
-            1 {sellAsset} ≈ {(1 / quote.midPrice).toFixed(6)} {buyAsset}
-          </span>
+      {/* Rate display with slippage settings */}
+      <div className="bg-primary-500/10 border border-primary-500/20 rounded-xl px-4 py-2.5 flex items-center justify-between text-sm">
+        <span className="text-gray-500 dark:text-gray-400">
+          {quote?.midPrice
+            ? `1 ${sellAsset} ≈ ${(1 / quote.midPrice).toFixed(6)} ${buyAsset}`
+            : 'DEX rate'}
+        </span>
+        <div className="relative" ref={slippagePopoverRef}>
+          <button
+            type="button"
+            onClick={() => setShowSlippagePopover((v) => !v)}
+            className="flex items-center gap-1 text-gray-500 dark:text-gray-400 hover:text-primary-500 transition-colors"
+            aria-label="Slippage tolerance settings"
+          >
+            <Settings size={14} />
+            <span className="font-medium">{slippage}%</span>
+          </button>
+
+          {showSlippagePopover && (
+            <div className="absolute right-0 top-8 z-20 bg-white dark:bg-gray-800 border border-gray-200 dark:border-gray-700 rounded-2xl p-4 w-56 shadow-xl space-y-3">
+              <p className="text-xs font-semibold text-gray-600 dark:text-gray-400 uppercase tracking-wide">
+                Slippage Tolerance
+              </p>
+              <div className="flex gap-2">
+                {SLIPPAGE_PRESETS.map((p) => (
+                  <button
+                    key={p}
+                    type="button"
+                    onClick={() => { applySlippage(p); setCustomSlippage(''); }}
+                    className={`flex-1 py-1.5 rounded-lg text-sm font-semibold border transition-colors ${
+                      slippage === p && !customSlippage
+                        ? 'border-primary-500 bg-primary-500/10 text-primary-500'
+                        : 'border-gray-200 dark:border-gray-700 text-gray-600 dark:text-gray-300 hover:border-primary-400'
+                    }`}
+                  >
+                    {p}%
+                  </button>
+                ))}
+              </div>
+              <div>
+                <label className="text-xs text-gray-500 block mb-1">Custom</label>
+                <div className="flex items-center gap-1">
+                  <input
+                    type="number"
+                    min="0.01"
+                    max="50"
+                    step="0.1"
+                    placeholder="0.5"
+                    value={customSlippage}
+                    onChange={(e) => {
+                      setCustomSlippage(e.target.value);
+                      if (e.target.value) applySlippage(e.target.value);
+                    }}
+                    className="flex-1 bg-gray-100 dark:bg-gray-700 rounded-lg px-2 py-1.5 text-sm text-gray-900 dark:text-white focus:outline-none focus:ring-1 focus:ring-primary-500"
+                  />
+                  <span className="text-sm text-gray-500">%</span>
+                </div>
+              </div>
+              {slippage > 5 && (
+                <p className="text-xs text-yellow-500">
+                  High slippage tolerance — your trade may result in an unfavorable price.
+                </p>
+              )}
+            </div>
+          )}
         </div>
-      )}
+      </div>
 
       <form onSubmit={handleSwap} className="space-y-3">
         {/* Sell */}
@@ -139,6 +240,11 @@ export default function Swap() {
             </span>
             <span className="text-lg font-semibold text-gray-700 dark:text-gray-300 shrink-0">{buyAsset}</span>
           </div>
+          {minReceived && (
+            <p className="text-xs text-gray-500">
+              Minimum received: {minReceived} {buyAsset} ({slippage}% slippage)
+            </p>
+          )}
         </div>
 
         {/* Price impact warning */}
