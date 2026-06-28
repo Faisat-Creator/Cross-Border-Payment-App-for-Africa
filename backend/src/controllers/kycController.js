@@ -4,7 +4,7 @@ const ALLOWED_ID_TYPES = ["national_id", "passport", "drivers_license", "voters_
 
 async function submitKYC(req, res, next) {
   try {
-    const { id_type, id_number, date_of_birth } = req.body;
+    const { id_type, id_number, date_of_birth, document_expiry_date } = req.body;
 
     if (!ALLOWED_ID_TYPES.includes(id_type)) {
       return res.status(400).json({ error: "Invalid ID type" });
@@ -15,11 +15,13 @@ async function submitKYC(req, res, next) {
     if (!date_of_birth || isNaN(Date.parse(date_of_birth))) {
       return res.status(400).json({ error: "Invalid date of birth" });
     }
+    if (document_expiry_date && isNaN(Date.parse(document_expiry_date))) {
+      return res.status(400).json({ error: "Invalid document expiry date" });
+    }
     if (!req.file) {
       return res.status(400).json({ error: "Document file is required" });
     }
 
-    // Check current status — do not allow resubmission if already verified or pending
     const userResult = await db.query("SELECT kyc_status FROM users WHERE id = $1", [
       req.user.userId,
     ]);
@@ -32,8 +34,8 @@ async function submitKYC(req, res, next) {
     if (currentStatus === "pending") {
       return res.status(409).json({ error: "KYC submission already under review" });
     }
+    // 'expired' status explicitly allows re-submission (falls through to update below)
 
-    // Store submission metadata — never store raw document images in the DB
     const kycData = {
       id_type,
       id_number_last4: id_number.trim().slice(-4),
@@ -45,12 +47,14 @@ async function submitKYC(req, res, next) {
 
     await db.query(
       `UPDATE users
-       SET kyc_status = 'pending',
-           kyc_data = $1,
-           kyc_submitted_at = NOW(),
-           updated_at = NOW()
-       WHERE id = $2`,
-      [JSON.stringify(kycData), req.user.userId],
+          SET kyc_status              = 'pending',
+              kyc_data                = $1,
+              kyc_submitted_at        = NOW(),
+              kyc_document_expiry_date = $2,
+              kyc_reminders_sent      = '{}',
+              updated_at              = NOW()
+        WHERE id = $3`,
+      [JSON.stringify(kycData), document_expiry_date || null, req.user.userId],
     );
 
     res.status(200).json({
@@ -65,14 +69,25 @@ async function submitKYC(req, res, next) {
 async function getKYCStatus(req, res, next) {
   try {
     const result = await db.query(
-      "SELECT kyc_status, kyc_submitted_at FROM users WHERE id = $1",
+      `SELECT kyc_status, kyc_submitted_at, kyc_document_expiry_date FROM users WHERE id = $1`,
       [req.user.userId],
     );
     if (!result.rows[0]) return res.status(404).json({ error: "User not found" });
 
+    const { kyc_status, kyc_submitted_at, kyc_document_expiry_date } = result.rows[0];
+
+    let days_until_expiry = null;
+    if (kyc_document_expiry_date) {
+      days_until_expiry = Math.ceil(
+        (new Date(kyc_document_expiry_date) - Date.now()) / (1000 * 60 * 60 * 24),
+      );
+    }
+
     res.json({
-      kyc_status: result.rows[0].kyc_status,
-      kyc_submitted_at: result.rows[0].kyc_submitted_at,
+      kyc_status,
+      kyc_submitted_at,
+      document_expiry_date: kyc_document_expiry_date,
+      days_until_expiry,
     });
   } catch (err) {
     next(err);

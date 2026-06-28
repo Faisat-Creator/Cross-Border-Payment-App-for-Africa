@@ -1,6 +1,10 @@
 const db = require('../db');
 const { sendPayment } = require('../services/stellar');
 const logger = require('../utils/logger');
+const { withLock } = require('../utils/distributedLock');
+
+const LOCK_KEY = 'lock:scheduled_payments';
+const LOCK_TTL = parseInt(process.env.SCHEDULED_JOB_LOCK_TTL_SECS || '55', 10);
 
 // Claim a batch of due payments atomically to avoid double-processing
 async function claimDuePayments() {
@@ -54,7 +58,7 @@ async function processOne(payment) {
   logger.info('Scheduled payment executed', { id: payment.id, tx_hash: transactionHash, ledger });
 }
 
-async function processScheduledPayments() {
+async function doProcess() {
   let payments;
   try {
     payments = await claimDuePayments();
@@ -82,6 +86,13 @@ async function processScheduledPayments() {
       }
     })
   );
+}
+
+async function processScheduledPayments() {
+  const ran = await withLock(LOCK_KEY, LOCK_TTL, doProcess);
+  if (!ran) {
+    logger.info('Scheduled payments job skipped — lock held by another instance.');
+  }
 }
 
 module.exports = { processScheduledPayments };

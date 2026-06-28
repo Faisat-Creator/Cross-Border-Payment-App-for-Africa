@@ -3,6 +3,7 @@ const https = require('https');
 const db = require('../db');
 const logger = require('../utils/logger');
 const { isPrivateIp } = require('../utils/ssrfValidator');
+const { decryptSecret } = require('../utils/symmetricEncryption');
 
 const MAX_ATTEMPTS = 3;
 
@@ -57,7 +58,7 @@ function httpsPost(url, body, signature) {
       headers: {
         'Content-Type': 'application/json',
         'Content-Length': Buffer.byteLength(body),
-        'X-AfriPay-Signature': `sha256=${signature}`,
+        'X-AfriPay-Signature-256': `sha256=${signature}`,
       },
     };
     const req = https.request(options, (res) => {
@@ -151,8 +152,12 @@ async function deliver(event, data) {
     `SELECT id, url, secret FROM webhooks WHERE active = true AND $1 = ANY(events)`,
     [event]
   );
-  const payload = { event, data, timestamp: new Date().toISOString() };
-  await Promise.all(rows.map((wh) => deliverWithRetry(wh.id, wh.url, wh.secret, payload)));
+  const timestamp = Math.floor(Date.now() / 1000);
+  const payload = { timestamp, event, data };
+  await Promise.all(rows.map((wh) => {
+    const plainSecret = decryptSecret(wh.secret);
+    return deliverWithRetry(wh.url, plainSecret, payload);
+  }));
 }
 
 module.exports = { deliver, sign, retryDelivery, MAX_ATTEMPTS };

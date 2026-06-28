@@ -33,6 +33,7 @@ router.post(
     body("id_type").notEmpty().withMessage("ID type is required"),
     body("id_number").notEmpty().withMessage("ID number is required"),
     body("date_of_birth").isISO8601().withMessage("Date of birth must be a valid date"),
+    body("document_expiry_date").optional().isISO8601().withMessage("Document expiry date must be a valid ISO 8601 date"),
   ],
   validate,
   submitKYC,

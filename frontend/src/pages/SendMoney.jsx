@@ -1,5 +1,8 @@
 import React, { useState, useEffect, useCallback, useMemo, useReducer, useRef } from 'react';
 import { useNavigate, useSearchParams, useBeforeUnload } from 'react-router-dom';
+import React, { useState, useEffect, useCallback, useMemo, useRef } from 'react';
+import { useMemoValidation } from '../hooks/useMemoValidation';
+import { useNavigate, useSearchParams, useBeforeUnload, Link } from 'react-router-dom';
 import {
   ArrowLeft,
   Send,
@@ -11,6 +14,7 @@ import {
   Wallet,
   AlertTriangle,
   CheckCircle,
+  BookUser,
 } from 'lucide-react';
 import api from '../utils/api';
 import { useExchangeRates } from '../hooks/useExchangeRates';
@@ -21,6 +25,8 @@ import QRScanner from '../components/QRScanner';
 import PINVerificationModal from '../components/PINVerificationModal';
 import XDRInspectorModal from '../components/XDRInspectorModal';
 import LedgerSignModal from '../components/LedgerSignModal';
+import PushNotificationPrompt from '../components/PushNotificationPrompt';
+import { usePushNotifications } from '../hooks/usePushNotifications';
 
 const SLIPPAGE_OPTIONS = [0.5, 1, 2];
 const DEFAULT_SLIPPAGE = 1;
@@ -64,6 +70,10 @@ export default function SendMoney() {
   const [selectedContactIndex, setSelectedContactIndex] = useState(-1);
   const contactSearchRef = useRef(null);
   const contactListRef = useRef(null);
+  const [selectedContactName, setSelectedContactName] = useState('');
+  const [showSaveContactPrompt, setShowSaveContactPrompt] = useState(null); // address string or null
+  const [saveContactName, setSaveContactName] = useState('');
+  const [saveContactLoading, setSaveContactLoading] = useState(false);
   const [showScanner, setShowScanner] = useState(false);
   const [showPINVerification, setShowPINVerification] = useState(false);
   const [showXDRInspector, setShowXDRInspector] = useState(false);
@@ -80,6 +90,8 @@ export default function SendMoney() {
   const [contractSimLoading, setContractSimLoading] = useState(false);
   const [requestId] = useState(searchParams.get('request'));
   const [keyboardOpen, setKeyboardOpen] = useState(false);
+  const [showPushPrompt, setShowPushPrompt] = useState(false);
+  const { shouldShowPrompt } = usePushNotifications();
 
   // Pre-fill form from payment request when only requestId is in the URL
   useEffect(() => {
@@ -717,8 +729,18 @@ export default function SendMoney() {
       }
 
       toast.success(t('send.success'));
+      const count = parseInt(localStorage.getItem('afripay_payment_count') || '0', 10) + 1;
+      localStorage.setItem('afripay_payment_count', count.toString());
+      if (count === 1 && shouldShowPrompt()) setShowPushPrompt(true);
+      const recipientAddr = form.recipient_address;
+      const isKnown = contacts.some((c) => c.wallet_address === recipientAddr);
       resetForm();
-      navigate('/dashboard');
+      if (!isKnown && recipientAddr.startsWith('G') && recipientAddr.length === 56) {
+        setShowSaveContactPrompt(recipientAddr);
+        setSaveContactName('');
+      } else {
+        navigate('/dashboard');
+      }
     } catch (err) {
       if (err.response?.data?.code === 'MEMO_REQUIRED') {
         setMemoError(true);
@@ -878,6 +900,137 @@ export default function SendMoney() {
                     </div>
                   )}
                 </div>
+                <ChevronDown
+                  size={14}
+                  className={`text-gray-400 transition-transform ${showWalletDropdown ? 'rotate-180' : ''}`}
+                />
+              </button>
+
+              {showWalletDropdown && (
+                <div
+                  className="absolute z-20 mt-1 w-full bg-gray-800 border border-gray-700 rounded-xl shadow-xl overflow-hidden"
+                  role="listbox"
+                >
+                  {wallets.map((w) => {
+                    const xlm = w.balances?.find((b) => b.asset === 'XLM')?.balance || '0';
+                    return (
+                      <button
+                        key={w.id}
+                        type="button"
+                        role="option"
+                        aria-selected={w.id === selectedWalletId}
+                        onClick={() => {
+                          setSelectedWalletId(w.id);
+                          setShowWalletDropdown(false);
+                        }}
+                        className={`w-full flex items-center justify-between px-4 py-3 text-left transition-colors ${
+                          w.id === selectedWalletId
+                            ? 'bg-primary-500/20 text-primary-400'
+                            : 'hover:bg-gray-700 text-white'
+                        }`}
+                      >
+                        <div>
+                          <p className="text-sm font-medium">{w.label}</p>
+                          <p className="text-xs text-gray-500 font-mono">
+                            {w.public_key.slice(0, 16)}…
+                          </p>
+                        </div>
+                        <p className="text-sm font-semibold">
+                          {parseFloat(xlm).toLocaleString()} XLM
+                        </p>
+                      </button>
+                    );
+                  })}
+                </div>
+              )}
+            </div>
+          </div>
+        )}
+
+        {/* Recipient */}
+        <div>
+          <div className="flex items-center justify-between mb-1">
+            <label className="text-sm text-gray-400">{t('send.recipient_label')}</label>
+            <div className="flex items-center gap-2">
+              <button
+                type="button"
+                onClick={() => setShowScanner(true)}
+                className="text-primary-500 hover:text-primary-400 p-1.5 rounded-lg hover:bg-primary-500/10 transition-colors"
+                title={t('send.scan_qr')}
+                aria-label={t('send.scan_qr')}
+              >
+                <Camera size={16} />
+              </button>
+              <button
+                  type="button"
+                  onClick={() => setShowContacts(!showContacts)}
+                  className="text-primary-500 hover:text-primary-400 p-1.5 rounded-lg hover:bg-primary-500/10 transition-colors"
+                  title="Contacts"
+                  aria-label="Open contact picker"
+                >
+                  <BookUser size={16} />
+                </button>
+            </div>
+          </div>
+          <input
+            type="text"
+            required
+            placeholder={t('send.recipient_placeholder') || 'Wallet address or username*domain'}
+            value={form.recipient_address}
+            onChange={(e) => {
+              setForm({ ...form, recipient_address: e.target.value });
+              setMemoRequired(false);
+              setAddressError(false);
+              setSelectedContactName('');
+            }}
+            onBlur={(e) => {
+              const val = e.target.value.trim();
+              if (val && !isValidStellarAddress(val)) setAddressError(true);
+              checkMemoRequired(val);
+            }}
+            aria-invalid={addressError}
+            aria-describedby={addressError ? 'address-error' : undefined}
+            className={`w-full bg-gray-800 border rounded-xl px-4 py-3 text-white placeholder-gray-500 focus:outline-none transition-colors font-mono text-sm ${
+              addressError
+                ? 'border-red-500 focus:border-red-400'
+                : 'border-gray-700 focus:border-primary-500'
+            }`}
+          />
+          {addressError && (
+            <p id="address-error" className="mt-1 text-xs text-red-400">
+              Invalid address. Enter a Stellar public key (G…, 56 chars) or federation address
+              (name*domain).
+            </p>
+          )}
+          {!addressError &&
+            form.recipient_address &&
+            isValidStellarAddress(form.recipient_address) && (
+              <p className="mt-1 flex items-center gap-1 text-xs text-green-400">
+                <CheckCircle size={12} aria-hidden="true" /> Valid address
+              </p>
+            )}
+          {selectedContactName && (
+            <p className="mt-1 text-xs text-primary-400 font-medium">
+              Sending to: {selectedContactName}
+            </p>
+          )}
+          {showContacts && (
+            <div
+              ref={contactsDropdownRef}
+              className="mt-1 bg-gray-800 border border-gray-700 rounded-xl overflow-hidden shadow-lg"
+              onKeyDown={handleContactKeyDown}
+            >
+              {/* Search input */}
+              <div className="p-2 border-b border-gray-700">
+                <input
+                  ref={contactSearchRef}
+                  type="text"
+                  placeholder="Search contacts..."
+                  value={contactSearch}
+                  onChange={(e) => setContactSearch(e.target.value)}
+                  className="w-full bg-gray-700 border border-gray-600 rounded-lg px-3 py-2 text-white text-sm placeholder-gray-400 focus:outline-none focus:border-primary-500"
+                  aria-label="Search contacts"
+                />
               </div>
             )}
 
@@ -905,6 +1058,58 @@ export default function SendMoney() {
                     </button>
                   )}
                 </div>
+              {/* Contact list */}
+              <div ref={contactListRef} className="max-h-60 overflow-y-auto">
+                {contacts.length === 0 ? (
+                  <div className="px-4 py-6 text-center text-gray-400">
+                    <p className="text-sm mb-1">No contacts saved yet.</p>
+                    <Link to="/profile" className="text-xs text-primary-400 hover:underline" onClick={() => setShowContacts(false)}>
+                      Save a contact
+                    </Link>
+                  </div>
+                ) : filteredContacts.length > 0 ? (
+                  filteredContacts.map((c, index) => {
+                    const initials = c.name ? c.name.charAt(0).toUpperCase() : '?';
+                    const avatarColors = ['bg-purple-500', 'bg-blue-500', 'bg-green-500', 'bg-yellow-500', 'bg-pink-500'];
+                    const avatarColor = avatarColors[(c.name || '').charCodeAt(0) % avatarColors.length];
+                    return (
+                      <button
+                        key={c.id}
+                        type="button"
+                        onClick={() => {
+                          setForm({
+                            ...form,
+                            recipient_address: c.wallet_address,
+                            memo: c.default_memo || form.memo,
+                          });
+                          setSelectedContactName(c.name);
+                          if (c.memo_required) setMemoRequired(true);
+                          setShowContacts(false);
+                          setContactSearch('');
+                        }}
+                        className={`w-full px-4 py-2.5 text-left flex items-center gap-3 transition-colors ${
+                          index === selectedContactIndex
+                            ? 'bg-primary-500/20 text-primary-400'
+                            : 'hover:bg-gray-700'
+                        }`}
+                      >
+                        <div className={`w-8 h-8 rounded-full ${avatarColor} flex items-center justify-center text-white text-sm font-bold flex-shrink-0`}>
+                          {initials}
+                        </div>
+                        <div className="min-w-0">
+                          <p className="text-sm text-white font-medium">{c.name}</p>
+                          <p className="text-xs text-gray-500 font-mono truncate">
+                            {c.wallet_address.slice(0, 12)}…{c.wallet_address.slice(-6)}
+                          </p>
+                        </div>
+                      </button>
+                    );
+                  })
+                ) : (
+                  <div className="px-4 py-6 text-center text-gray-400">
+                    <p className="text-sm">No contacts match</p>
+                  </div>
+                )}
               </div>
               <input
                 type="text"
@@ -1485,6 +1690,60 @@ export default function SendMoney() {
         onClose={() => setShowXDRInspector(false)}
         xdr={transactionXDR}
       />
+
+      {showPushPrompt && (
+        <PushNotificationPrompt onDismiss={() => setShowPushPrompt(false)} />
+      )}
+
+      {/* Save contact prompt after successful payment */}
+      {showSaveContactPrompt && (
+        <div className="fixed inset-0 bg-black/60 flex items-end sm:items-center justify-center z-50 p-4">
+          <div className="bg-gray-900 border border-gray-700 rounded-2xl w-full max-w-sm p-6">
+            <h3 className="text-white font-semibold text-base mb-1">Save as a contact?</h3>
+            <p className="text-gray-400 text-xs font-mono mb-4 break-all">
+              {showSaveContactPrompt.slice(0, 16)}…{showSaveContactPrompt.slice(-8)}
+            </p>
+            <input
+              type="text"
+              placeholder="Contact name"
+              value={saveContactName}
+              onChange={(e) => setSaveContactName(e.target.value)}
+              className="w-full bg-gray-800 border border-gray-700 rounded-xl px-4 py-2.5 text-white text-sm placeholder-gray-500 focus:outline-none focus:border-primary-500 mb-4"
+              autoFocus
+            />
+            <div className="flex gap-3">
+              <button
+                type="button"
+                disabled={saveContactLoading}
+                onClick={async () => {
+                  if (!saveContactName.trim()) return;
+                  setSaveContactLoading(true);
+                  try {
+                    await api.post('/wallet/contacts', { name: saveContactName.trim(), wallet_address: showSaveContactPrompt });
+                    toast.success('Contact saved!');
+                  } catch {
+                    toast.error('Could not save contact');
+                  } finally {
+                    setSaveContactLoading(false);
+                    setShowSaveContactPrompt(null);
+                    navigate('/dashboard');
+                  }
+                }}
+                className="flex-1 bg-primary-500 hover:bg-primary-400 disabled:opacity-50 text-white font-semibold py-2.5 rounded-xl text-sm transition-colors"
+              >
+                {saveContactLoading ? 'Saving…' : 'Save'}
+              </button>
+              <button
+                type="button"
+                onClick={() => { setShowSaveContactPrompt(null); navigate('/dashboard'); }}
+                className="flex-1 bg-gray-700 hover:bg-gray-600 text-white font-semibold py-2.5 rounded-xl text-sm transition-colors"
+              >
+                Skip
+              </button>
+            </div>
+          </div>
+        </div>
+      )}
     </div>
   );
 }
