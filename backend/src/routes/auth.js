@@ -1,7 +1,6 @@
 const router = require('express').Router();
 const { body, validationResult } = require('express-validator');
 const multer = require('multer');
-const { register, login, verifyEmail, getMe, setPIN, verifyPIN } = require('../controllers/authController');
 const {
   register,
   login,
@@ -9,16 +8,20 @@ const {
   logout,
   verifyEmail,
   verifyPhone,
+  getMe,
   updateProfile,
   changeEmail,
   verifyEmailChange,
   getActivity,
   uploadAvatar,
+  setPIN,
+  verifyPIN,
   setup2FA,
   verify2FA,
   disable2FA,
   forgotPassword,
   resetPassword,
+  validateResetToken,
 } = require('../controllers/authController');
 const authMiddleware = require('../middleware/auth');
 const geoRestriction = require('../middleware/geoRestriction');
@@ -90,6 +93,8 @@ router.post(
   validate,
   resetPassword
 );
+
+router.get('/reset-password/validate', validateResetToken);
 
 router.post('/refresh', verifyCsrf, refresh);
 router.post('/logout', verifyCsrf, logout);

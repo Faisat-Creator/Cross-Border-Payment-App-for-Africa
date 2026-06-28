@@ -4,6 +4,9 @@ const jwt = require('jsonwebtoken');
 /** Short-lived access token (default 15m). Override with JWT_EXPIRES_IN e.g. "15m". */
 const ACCESS_TOKEN_TTL = process.env.JWT_EXPIRES_IN || '15m';
 
+/** Device trust token lifetime: 30 days. */
+const DEVICE_TOKEN_TTL = '30d';
+
 /** Refresh token lifetime in days (default 30). */
 const REFRESH_TOKEN_DAYS = Math.max(
   1,
@@ -39,12 +42,29 @@ function refreshTokenExpiresAt() {
   return new Date(Date.now() + REFRESH_TOKEN_TTL_MS);
 }
 
+/** Issue a 30-day device trust token (stored client-side in localStorage). */
+function signDeviceToken(payload) {
+  return jwt.sign({ ...payload, type: 'device_trust' }, process.env.JWT_SECRET, { expiresIn: DEVICE_TOKEN_TTL });
+}
+
+/**
+ * Verify a device trust token. Throws if invalid, expired, or wrong type.
+ * Returns the decoded payload.
+ */
+function verifyDeviceToken(token) {
+  const payload = jwt.verify(token, process.env.JWT_SECRET);
+  if (payload.type !== 'device_trust') throw new Error('Not a device trust token');
+  return payload;
+}
+
 module.exports = {
   COOKIE_NAME,
   COOKIE_OPTIONS,
   signAccessToken,
   generateRefreshToken,
   refreshTokenExpiresAt,
+  signDeviceToken,
+  verifyDeviceToken,
   ACCESS_TOKEN_TTL,
   REFRESH_TOKEN_DAYS,
 };

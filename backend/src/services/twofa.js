@@ -10,7 +10,7 @@ async function generateSecret(email) {
   });
 
   const qrCode = await QRCode.toDataURL(secret.otpauth_url);
-  return { secret: secret.base32, qrCode };
+  return { secret: secret.base32, qrCode, otpauthUri: secret.otpauth_url };
 }
 
 function verifyToken(secret, token) {

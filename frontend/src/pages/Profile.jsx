@@ -1,4 +1,5 @@
 import React, { useState, useRef } from 'react';
+import { QRCodeSVG } from 'qrcode.react';
 import { useNavigate, Link } from 'react-router-dom';
 import toast from 'react-hot-toast';
 import { useTranslation } from 'react-i18next';
@@ -1267,7 +1268,20 @@ export default function Profile() {
               <p className="text-sm text-gray-300 text-center">
                 Scan this QR code with your authenticator app (Google Authenticator, Authy, etc.)
               </p>
-              <img src={twoFAData.qrCode} alt="2FA QR Code" className="w-44 h-44 rounded-lg" />
+              <div className="bg-white p-2 rounded-lg">
+                <QRCodeSVG
+                  value={twoFAData.otpauthUri || twoFAData.qrCode}
+                  size={176}
+                />
+              </div>
+              {twoFAData.secret && (
+                <div className="w-full text-center">
+                  <p className="text-xs text-gray-400 mb-1">Or enter this key manually:</p>
+                  <p className="font-mono text-xs text-white bg-gray-900 px-3 py-2 rounded-lg break-all tracking-widest select-all">
+                    {twoFAData.secret}
+                  </p>
+                </div>
+              )}
             </div>
 
             <div className="bg-yellow-500/10 border border-yellow-500/30 rounded-xl p-4">

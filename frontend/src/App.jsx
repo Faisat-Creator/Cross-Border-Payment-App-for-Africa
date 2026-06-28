@@ -26,6 +26,7 @@ import Sessions from "./pages/Sessions";
 import Escrow from "./pages/Escrow";
 import Layout from "./components/Layout";
 import ErrorBoundary from "./components/ErrorBoundary";
+import UpdateBanner from "./components/UpdateBanner";
 
 // Code-split large pages
 const Analytics = React.lazy(() => import("./pages/Analytics"));
@@ -193,6 +194,7 @@ export default function App() {
               }}
             />
             <AppRoutes />
+            <UpdateBanner />
           </BrowserRouter>
           </CurrencyProvider>
         </ThemeProvider>

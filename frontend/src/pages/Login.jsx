@@ -14,9 +14,7 @@ export default function Login() {
   const [form, setForm] = useState({ email: '', password: '' });
   const [showPass, setShowPass] = useState(false);
   const [loading, setLoading] = useState(false);
-  const [rememberMe, setRememberMe] = useState(() => {
-    return localStorage.getItem('afripay_remember_me') === 'true';
-  });
+  const [rememberDevice, setRememberDevice] = useState(false);
 
   // Rate-limit cooldown (issue #655) — persisted across refreshes via sessionStorage
   const COOLDOWN_KEY = 'afripay_login_cooldown_until';
@@ -65,9 +63,16 @@ export default function Login() {
     e.preventDefault();
     setLoading(true);
     try {
-      await login(form.email, form.password);
-      // Persist remember-me preference
-      localStorage.setItem('afripay_remember_me', rememberMe.toString());
+      const existingDeviceToken = localStorage.getItem('afripay_device_token');
+      const result = await login(
+        form.email,
+        form.password,
+        rememberDevice ? { rememberDevice: true } : {},
+        existingDeviceToken
+      );
+      if (result?.device_token) {
+        localStorage.setItem('afripay_device_token', result.device_token);
+      }
       const redirectParam = searchParams.get('redirect');
       const redirect = redirectParam || sessionStorage.getItem('afripay_redirect');
       sessionStorage.removeItem('afripay_redirect');
@@ -98,11 +103,15 @@ export default function Login() {
     if (digits.length === 6) {
       setLoading(true);
       try {
-        const res = await api.post('/auth/login', {
-          email: form.email,
-          password: form.password,
-          totp_code: digits,
-        });
+        const deviceToken = localStorage.getItem('afripay_device_token');
+        const res = await api.post(
+          '/auth/login',
+          { email: form.email, password: form.password, totp_code: digits, ...(rememberDevice && { rememberDevice: true }) },
+          deviceToken ? { headers: { 'x-device-token': deviceToken } } : {}
+        );
+        if (res.data.device_token) {
+          localStorage.setItem('afripay_device_token', res.data.device_token);
+        }
         // Manually set token + user via the same path login() uses
         const { tokenStore } = await import('../context/AuthContext');
         tokenStore.set(res.data.token);
@@ -215,11 +224,11 @@ export default function Login() {
                 <label className="flex items-center gap-2 cursor-pointer">
                   <input
                     type="checkbox"
-                    checked={rememberMe}
-                    onChange={(e) => setRememberMe(e.target.checked)}
+                    checked={rememberDevice}
+                    onChange={(e) => setRememberDevice(e.target.checked)}
                     className="w-4 h-4 rounded border-gray-300 text-primary-500 focus:ring-primary-500 cursor-pointer"
                   />
-                  <span className="text-sm text-gray-600 dark:text-gray-400">{t('login.remember_me', 'Remember me')}</span>
+                  <span className="text-sm text-gray-600 dark:text-gray-400">{t('login.remember_device', 'Remember this device for 30 days')}</span>
                 </label>
                 <Link to="/forgot-password" className="text-sm text-primary-500 hover:underline">
                   {t('login.forgot_password')}

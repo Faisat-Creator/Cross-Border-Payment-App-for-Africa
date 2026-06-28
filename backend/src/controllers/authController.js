@@ -14,6 +14,8 @@ const {
   signAccessToken,
   generateRefreshToken,
   refreshTokenExpiresAt,
+  signDeviceToken,
+  verifyDeviceToken,
 } = require('../utils/tokens');
 const { setCsrfCookie } = require('../middleware/csrf');
 
@@ -163,7 +165,8 @@ async function register(req, res, next) {
 
 async function login(req, res, next) {
   try {
-    const { email, password, totp_code } = req.body;
+    const { email, password, totp_code, rememberDevice } = req.body;
+    const incomingDeviceToken = req.headers['x-device-token'];
 
     const result = await db.query(
       `SELECT u.id, u.full_name, u.email, u.password_hash, u.email_verified, u.role,
@@ -245,15 +248,25 @@ async function login(req, res, next) {
       return res.status(403).json({ error: 'Please verify your email before logging in.' });
     }
 
-    // Short-lived access token
     // 2FA check — must happen before issuing tokens
     if (user.totp_enabled) {
-      if (!totp_code) {
-        return res.status(403).json({ error: 'TOTP code required', requires_2fa: true });
+      // Check if the incoming device trust token allows skipping TOTP
+      let deviceTrusted = false;
+      if (incomingDeviceToken) {
+        try {
+          const payload = verifyDeviceToken(incomingDeviceToken);
+          deviceTrusted = String(payload.userId) === String(user.id);
+        } catch { /* expired or invalid — fall through to TOTP */ }
       }
-      const isValid = verifyToken(user.totp_secret, totp_code);
-      if (!isValid) {
-        return res.status(401).json({ error: 'Invalid TOTP code' });
+
+      if (!deviceTrusted) {
+        if (!totp_code) {
+          return res.status(403).json({ error: 'TOTP code required', requires_2fa: true });
+        }
+        const isValid = verifyToken(user.totp_secret, totp_code);
+        if (!isValid) {
+          return res.status(401).json({ error: 'Invalid TOTP code' });
+        }
       }
     }
 
@@ -280,6 +293,8 @@ async function login(req, res, next) {
     // Record session for remote logout support
     await recordSession(user.id, token, req).catch(() => {});
 
+    const device_token = rememberDevice ? signDeviceToken({ userId: user.id }) : undefined;
+
     res.cookie(COOKIE_NAME, raw, COOKIE_OPTIONS);
     setCsrfCookie(res);
     audit.log(user.id, 'login_success', req.ip, req.headers['user-agent']);
@@ -292,6 +307,7 @@ async function login(req, res, next) {
         wallet_address: user.public_key,
         phone_verified: user.phone_verified,
       },
+      ...(device_token && { device_token }),
     });
   } catch (err) {
     next(err);
@@ -417,7 +433,7 @@ async function setup2FA(req, res, next) {
     const user = await db.query('SELECT email FROM users WHERE id = $1', [userId]);
     if (!user.rows[0]) return res.status(404).json({ error: 'User not found' });
 
-    const { secret, qrCode } = await generateSecret(user.rows[0].email);
+    const { secret, qrCode, otpauthUri } = await generateSecret(user.rows[0].email);
     const backupCodes = generateBackupCodes();
 
     // Store temporarily (not enabled yet)
@@ -426,7 +442,7 @@ async function setup2FA(req, res, next) {
       [secret, backupCodes, userId]
     );
 
-    res.json({ qrCode, backupCodes, secret });
+    res.json({ qrCode, backupCodes, secret, otpauthUri });
   } catch (err) {
     next(err);
   }
@@ -699,6 +715,30 @@ async function resetPassword(req, res, next) {
   }
 }
 
+async function validateResetToken(req, res, next) {
+  try {
+    const { token } = req.query;
+    if (!token) {
+      return res.status(400).json({ error: 'Token is required' });
+    }
+
+    const tokenHash = crypto.createHash('sha256').update(token).digest('hex');
+    const found = await db.query(
+      `SELECT expires_at FROM password_reset_tokens
+       WHERE token_hash = $1 AND used_at IS NULL AND expires_at > NOW()`,
+      [tokenHash]
+    );
+
+    if (found.rows.length === 0) {
+      return res.status(401).json({ error: 'Invalid or expired reset token' });
+    }
+
+    res.json({ expires_at: found.rows[0].expires_at });
+  } catch (err) {
+    next(err);
+  }
+}
+
 async function updateProfile(req, res, next) {
   try {
     const { full_name, phone } = req.body;
@@ -890,4 +930,5 @@ module.exports = {
   disable2FA,
   forgotPassword,
   resetPassword,
+  validateResetToken,
 };
