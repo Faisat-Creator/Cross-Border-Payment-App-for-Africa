@@ -4,6 +4,15 @@ const { processScheduledPayments } = require('./jobs/scheduledPaymentsJob');
 const { indexContractEvents } = require('./jobs/contractEventIndexer');
 const { checkClaimableBalanceExpiry } = require('./jobs/checkClaimableBalanceExpiry');
 const { syncOfferEvents } = require('./jobs/syncOfferEvents');
+const { processRetryQueue } = require('./services/webpush');
+const db = require('./db');
+
+// Configurable cron expressions — fall back to sensible defaults
+const PAYMENTS_CRON       = process.env.CRON_SCHEDULED_PAYMENTS   || '* * * * *';   // every minute
+const INDEXER_CRON        = process.env.CRON_CONTRACT_INDEXER      || '*/2 * * * *'; // every 2 minutes
+const EXPIRY_CRON         = process.env.CRON_CLAIMABLE_EXPIRY      || '*/15 * * * *'; // every 15 minutes
+const OFFER_SYNC_CRON     = process.env.CRON_OFFER_SYNC            || '*/2 * * * *'; // every 2 minutes
+const PUSH_RETRY_CRON     = process.env.CRON_PUSH_RETRY            || '* * * * *';   // every 60 seconds
 const { checkKycDocumentExpiry } = require('./jobs/kycExpiryJob');
 
 // Configurable cron expressions — fall back to sensible defaults
@@ -46,6 +55,8 @@ function startScheduler() {
   cron.schedule(OFFER_SYNC_CRON, safeJob('syncOfferEvents', syncOfferEvents));
   logger.info('DEX offer event sync job registered', { cron: OFFER_SYNC_CRON });
 
+  cron.schedule(PUSH_RETRY_CRON, safeJob('pushRetryQueue', () => processRetryQueue(db)));
+  logger.info('Push notification retry job registered', { cron: PUSH_RETRY_CRON });
   cron.schedule(KYC_EXPIRY_CRON, safeJob('kycExpiryJob', checkKycDocumentExpiry));
   logger.info('KYC document expiry job registered', { cron: KYC_EXPIRY_CRON });
 

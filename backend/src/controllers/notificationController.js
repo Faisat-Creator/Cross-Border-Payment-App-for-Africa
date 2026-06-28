@@ -74,20 +74,32 @@ async function unsubscribe(req, res, next) {
  */
 async function sendPushToUser(userId, payload) {
   const { rows } = await db.query(
-    'SELECT push_subscription FROM users WHERE id = $1',
+    'SELECT id, push_subscription FROM users WHERE id = $1',
     [userId],
   );
-  const sub = rows[0]?.push_subscription;
-  if (!sub) return; // user hasn't subscribed
+  const row = rows[0];
+  if (!row?.push_subscription) return;
 
   try {
-    await webpush.sendNotification(sub, JSON.stringify(payload));
+    await webpush.sendNotification(row.push_subscription, JSON.stringify(payload), row.id, db);
   } catch (err) {
-    // 410 Gone = subscription expired/revoked — clean it up
     if (err.statusCode === 410) {
       await db.query('UPDATE users SET push_subscription = NULL WHERE id = $1', [userId]);
     }
   }
 }
 
-module.exports = { subscribe, unsubscribe, sendPushToUser };
+/**
+ * GET /api/admin/notifications/dead-letter
+ * Admin-only: inspect undeliverable notifications.
+ */
+async function getDeadLetterNotifications(req, res, next) {
+  try {
+    const items = await webpush.getDeadLetter();
+    res.json(items);
+  } catch (err) {
+    next(err);
+  }
+}
+
+module.exports = { subscribe, unsubscribe, sendPushToUser, getDeadLetterNotifications };

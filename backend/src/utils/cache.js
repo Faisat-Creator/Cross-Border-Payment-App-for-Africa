@@ -58,4 +58,4 @@ async function del(key) {
   }
 }
 
-module.exports = { get, set, del, BALANCE_TTL };
+module.exports = { get, set, del, BALANCE_TTL, getClient };
