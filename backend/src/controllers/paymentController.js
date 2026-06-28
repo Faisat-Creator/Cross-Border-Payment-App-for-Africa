@@ -1,5 +1,6 @@
 ﻿const { v4: uuidv4 } = require("uuid");
-const { stringify } = require("csv-stringify/sync");
+const { stringify: stringifySync } = require("csv-stringify/sync");
+const { stringify: stringifyStream } = require("csv-stringify");
 const db = require("../db");
 const StellarSdk = require("@stellar/stellar-sdk");
 const {
@@ -891,6 +892,7 @@ async function pollTransactionConfirmation(txId, txHash) {
 }
 
 async function exportCSV(req, res, next) {
+  let client;
   try {
     const walletResult = await db.query(
       "SELECT public_key FROM wallets WHERE user_id = $1 ORDER BY is_default DESC, created_at ASC LIMIT 1",
@@ -913,27 +915,7 @@ async function exportCSV(req, res, next) {
     if (req.query.direction === "sent") filters += " AND sender_wallet = $1";
     else if (req.query.direction === "received") filters += " AND recipient_wallet = $1";
 
-    const result = await db.query(
-      `SELECT created_at, sender_wallet, recipient_wallet, amount, asset, memo, tx_hash, status
-       FROM transactions
-       WHERE (sender_wallet = $1 OR recipient_wallet = $1)${filters}
-       ORDER BY created_at DESC`,
-      params,
-    );
-
-    const rows = result.rows.map((tx) => ({
-      date: new Date(tx.created_at).toISOString(),
-      direction: tx.sender_wallet === public_key ? "sent" : "received",
-      amount: tx.amount,
-      asset: tx.asset,
-      recipient_or_sender: tx.sender_wallet === public_key ? tx.recipient_wallet : tx.sender_wallet,
-      memo: tx.memo || "",
-      tx_hash: tx.tx_hash || "",
-      status: tx.status,
-    }));
-
-    res.setHeader("Content-Type", "text/csv");
-    // Build dynamic filename based on date range params; sanitize to prevent header injection
+    // Build filename before streaming starts
     const sanitize = (s) => s.replace(/[^0-9a-zA-Z_\-]/g, "");
     let filename;
     if (req.query.from || req.query.to) {
@@ -944,15 +926,63 @@ async function exportCSV(req, res, next) {
       const today = new Date().toISOString().slice(0, 10);
       filename = `transactions_exported_${today}.csv`;
     }
+
+    res.setHeader("Content-Type", "text/csv");
     res.setHeader("Content-Disposition", `attachment; filename="${filename}"`);
 
-    const output = stringify(rows, {
+    // Use a dedicated client for the cursor so we can keep it open across fetches
+    client = await db.pool.connect();
+    const cursorName = `export_cursor_${Date.now()}`;
+    await client.query("BEGIN");
+    await client.query(
+      `DECLARE ${cursorName} CURSOR FOR
+       SELECT created_at, sender_wallet, recipient_wallet, amount, asset, memo, tx_hash, status
+       FROM transactions
+       WHERE (sender_wallet = $1 OR recipient_wallet = $1)${filters}
+       ORDER BY created_at DESC`,
+      params,
+    );
+
+    const csvStream = stringifyStream({
       header: true,
       columns: ["date", "direction", "amount", "asset", "recipient_or_sender", "memo", "tx_hash", "status"],
     });
-    res.send(output);
+
+    csvStream.pipe(res);
+
+    const BATCH = 500;
+    // eslint-disable-next-line no-constant-condition
+    while (true) {
+      const { rows } = await client.query(`FETCH ${BATCH} FROM ${cursorName}`);
+      if (rows.length === 0) break;
+      for (const tx of rows) {
+        const ok = csvStream.write({
+          date: new Date(tx.created_at).toISOString(),
+          direction: tx.sender_wallet === public_key ? "sent" : "received",
+          amount: tx.amount,
+          asset: tx.asset,
+          recipient_or_sender: tx.sender_wallet === public_key ? tx.recipient_wallet : tx.sender_wallet,
+          memo: tx.memo || "",
+          tx_hash: tx.tx_hash || "",
+          status: tx.status,
+        });
+        // Respect backpressure
+        if (!ok) await new Promise((resolve) => csvStream.once("drain", resolve));
+      }
+    }
+
+    csvStream.end();
+    await client.query("CLOSE " + cursorName);
+    await client.query("COMMIT");
+    client.release();
+    client = null;
   } catch (err) {
-    next(err);
+    if (client) {
+      try { await client.query("ROLLBACK"); } catch (_) {}
+      client.release();
+    }
+    // Headers may already be sent if streaming started; just destroy the connection
+    if (res.headersSent) { res.destroy(); } else { next(err); }
   }
 }
 
