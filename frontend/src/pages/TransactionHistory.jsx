@@ -1,6 +1,6 @@
 import React, { useEffect, useRef, useState, useMemo, useCallback } from 'react';
 import { useNavigate, useSearchParams } from 'react-router-dom';
-import { ArrowLeft, Send, Download, ExternalLink, Filter, Search, Flag, X, WifiOff, Loader2, Copy, CheckCheck } from 'lucide-react';
+import { ArrowLeft, ChevronDown, Send, Download, ExternalLink, Filter, Search, Flag, X, WifiOff, Loader2 } from 'lucide-react';
 import api from '../utils/api';
 import { truncateAddress } from '../utils/currency';
 import { TransactionCardSkeleton } from '../components/Skeleton';
@@ -26,13 +26,27 @@ function getDaysUntilExpiry(createdAt) {
 }
 
 const ASSET_OPTIONS = ['XLM', 'USDC', 'NGN', 'GHS', 'KES'];
+const STATUS_OPTIONS = ['completed', 'pending', 'failed', 'cancelled'];
 
-function buildHistoryParams(cursor, dateFrom, dateTo, asset) {
+function getDateDaysAgo(days) {
+  const d = new Date();
+  d.setDate(d.getDate() - days);
+  return d.toISOString().split('T')[0];
+}
+
+const DATE_PRESETS = [
+  { label: 'Today', getFrom: () => new Date().toISOString().split('T')[0], getTo: () => new Date().toISOString().split('T')[0] },
+  { label: 'Last 7 days', getFrom: () => getDateDaysAgo(7), getTo: () => new Date().toISOString().split('T')[0] },
+  { label: 'Last 30 days', getFrom: () => getDateDaysAgo(30), getTo: () => new Date().toISOString().split('T')[0] },
+];
+
+function buildHistoryParams(cursor, dateFrom, dateTo, asset, statuses) {
   const params = { limit: 20 };
   if (cursor) params.cursor = cursor;
   if (dateFrom) params.from = dateFrom;
   if (dateTo) params.to = dateTo;
   if (asset) params.asset = asset;
+  if (statuses && statuses.length > 0) params.status = statuses.join(',');
   return params;
 }
 
@@ -56,6 +70,12 @@ export default function TransactionHistory() {
   const dateFrom = searchParams.get('from') || '';
   const dateTo = searchParams.get('to') || '';
   const asset = searchParams.get('asset') || '';
+  const statusParam = searchParams.get('status') || '';
+  const selectedStatuses = useMemo(
+    () => (statusParam ? statusParam.split(',').filter(Boolean) : []),
+    [statusParam]
+  );
+  const [showFilters, setShowFilters] = useState(false);
 
   function setFilter(value) {
     setSearchParams((prev) => {
@@ -85,6 +105,36 @@ export default function TransactionHistory() {
       return next;
     }, { replace: true });
   }
+  function toggleStatus(s) {
+    setSearchParams((prev) => {
+      const next = new URLSearchParams(prev);
+      const current = (prev.get('status') || '').split(',').filter(Boolean);
+      const updated = current.includes(s) ? current.filter((x) => x !== s) : [...current, s];
+      if (updated.length) next.set('status', updated.join(','));
+      else next.delete('status');
+      return next;
+    }, { replace: true });
+  }
+  function clearAllFilters() {
+    setSearchParams((prev) => {
+      const next = new URLSearchParams(prev);
+      next.delete('direction');
+      next.delete('from');
+      next.delete('to');
+      next.delete('asset');
+      next.delete('status');
+      return next;
+    }, { replace: true });
+  }
+
+  const activeFilterCount = [
+    filter !== 'all',
+    !!dateFrom,
+    !!dateTo,
+    !!asset,
+    selectedStatuses.length > 0,
+  ].filter(Boolean).length;
+
   const [reportTx, setReportTx] = useState(null); // tx being reported
   const [reportType, setReportType] = useState('other');
   const [reportDesc, setReportDesc] = useState('');
@@ -122,7 +172,7 @@ export default function TransactionHistory() {
 
     // Online — fetch fresh and persist
     try {
-      const params = buildHistoryParams(null, dateFrom, dateTo, asset);
+      const params = buildHistoryParams(null, dateFrom, dateTo, asset, selectedStatuses);
       const r = await api.get('/payments/history', { params });
       const txList = r.data.transactions;
       setTransactions(txList);
@@ -130,8 +180,8 @@ export default function TransactionHistory() {
       setNextCursor(r.data.next_cursor || null);
       setFromCache(false);
 
-      // Only cache the unfiltered first page (no date/asset filters)
-      if (!dateFrom && !dateTo && !asset) {
+      // Only cache the unfiltered first page
+      if (!dateFrom && !dateTo && !asset && selectedStatuses.length === 0) {
         await setCacheEntry('history', txList);
       }
     } catch {
@@ -155,7 +205,7 @@ export default function TransactionHistory() {
     } finally {
       setLoading(false);
     }
-  }, [dateFrom, dateTo, asset, t]);
+  }, [dateFrom, dateTo, asset, selectedStatuses, t]);
 
   useEffect(() => {
     fetchInitial();
@@ -197,15 +247,31 @@ export default function TransactionHistory() {
       },
       { rootMargin: '200px' }
     );
-    observer.observe(sentinelRef.current);
-    return () => observer.disconnect();
-  }, [hasMore, loadingMore, loadMore]);
+  }, [currentPage, setSearchParams]);
+
+  const loadMore = () => {
+    if (!nextCursor) return;
+    setLoadingMore(true);
+    const nextPage = currentPage + 1;
+    const params = buildHistoryParams(nextCursor, dateFrom, dateTo, asset, selectedStatuses);
+    api
+      .get('/payments/history', { params })
+      .then((r) => {
+        setTransactions((prev) => [...prev, ...r.data.transactions]);
+        setHasMore(r.data.has_more);
+        setNextCursor(r.data.next_cursor || null);
+        setCurrentPage(nextPage);
+      })
+      .catch(() => {})
+      .finally(() => setLoadingMore(false));
+  };
 
   const filtered = useMemo(() => {
     const q = search.trim().toLowerCase();
     return transactions.filter((tx) => {
       if (filter === 'sent' && tx.direction !== 'sent') return false;
       if (filter === 'received' && tx.direction !== 'received') return false;
+      if (selectedStatuses.length > 0 && !selectedStatuses.includes(tx.status)) return false;
       if (!q) return true;
       const memo = (tx.memo || '').toLowerCase();
       const sender = (tx.sender_wallet || '').toLowerCase();
@@ -218,7 +284,7 @@ export default function TransactionHistory() {
         amountStr.includes(q)
       );
     });
-  }, [transactions, filter, search]);
+  }, [transactions, filter, search, selectedStatuses]);
 
   async function handleExportCSV() {
     if (exporting) return;
@@ -289,99 +355,232 @@ export default function TransactionHistory() {
             </span>
           )}
         </h2>
-        <div className="flex items-center gap-2">
+        <button
+          type="button"
+          onClick={handleExportCSV}
+          disabled={exporting}
+          className="flex items-center gap-1.5 px-3 py-1.5 rounded-lg bg-gray-800 text-gray-300 hover:text-white hover:bg-gray-700 text-sm font-medium transition-colors disabled:opacity-50"
+        >
+          <Download size={14} />
+          {exporting ? <Loader2 size={14} className="animate-spin" /> : t('history.export_csv')}
+        </button>
+      </div>
+
+      {/* Search */}
+      <div className="relative mb-3">
+        <Search
+          size={16}
+          className="absolute left-3 top-1/2 -translate-y-1/2 text-gray-500 pointer-events-none"
+        />
+        <input
+          type="search"
+          value={search}
+          onChange={(e) => setSearch(e.target.value)}
+          placeholder={t('history.search_placeholder')}
+          className="w-full bg-gray-900 border border-gray-700 rounded-xl pl-9 pr-3 py-2.5 text-sm text-white placeholder-gray-500 focus:outline-none focus:border-primary-500"
+          aria-label={t('history.search_placeholder')}
+        />
+      </div>
+
+      {/* Filters toggle */}
+      <div className="flex items-center justify-between mb-2">
+        <button
+          type="button"
+          onClick={() => setShowFilters((v) => !v)}
+          className="flex items-center gap-2 px-3 py-1.5 rounded-lg bg-gray-800 text-gray-300 hover:text-white hover:bg-gray-700 text-sm font-medium transition-colors"
+        >
+          <Filter size={14} />
+          Filters
+          {activeFilterCount > 0 && (
+            <span className="inline-flex items-center justify-center w-4 h-4 rounded-full bg-primary-500 text-white text-xs font-bold">
+              {activeFilterCount}
+            </span>
+          )}
+          <ChevronDown size={14} className={`transition-transform ${showFilters ? 'rotate-180' : ''}`} />
+        </button>
+        {activeFilterCount > 0 && (
           <button
             type="button"
-            onClick={handleExportCSV}
-            disabled={exporting}
-            className="flex items-center gap-1.5 px-3 py-1.5 rounded-lg bg-gray-800 text-gray-300 hover:text-white hover:bg-gray-700 text-sm font-medium transition-colors disabled:opacity-50"
+            onClick={clearAllFilters}
+            className="text-xs text-gray-500 hover:text-white transition-colors"
           >
-            <Download size={14} />
-            {exporting ? <Loader2 size={14} className="animate-spin" /> : t('history.export_csv')}
+            Clear all
           </button>
-          <Filter size={18} className="text-gray-400" />
-        </div>
+        )}
       </div>
 
-      <div className="space-y-3 mb-4">
-        <div className="relative">
-          <Search
-            size={16}
-            className="absolute left-3 top-1/2 -translate-y-1/2 text-gray-500 pointer-events-none"
-          />
-          <input
-            type="search"
-            value={search}
-            onChange={(e) => setSearch(e.target.value)}
-            placeholder={t('history.search_placeholder')}
-            className="w-full bg-gray-900 border border-gray-700 rounded-xl pl-9 pr-3 py-2.5 text-sm text-white placeholder-gray-500 focus:outline-none focus:border-primary-500"
-            aria-label={t('history.search_placeholder')}
-          />
-        </div>
-        <div className="grid grid-cols-2 gap-2">
+      {/* Collapsible filter panel */}
+      {showFilters && (
+        <div className="bg-gray-900 border border-gray-800 rounded-xl p-4 mb-3 space-y-4">
+          {/* Status */}
           <div>
-            <label htmlFor="tx-date-from" className="text-xs text-gray-500 block mb-1">
-              {t('history.date_from')}
-            </label>
-            <input
-              id="tx-date-from"
-              type="date"
-              value={dateFrom}
-              onChange={(e) => setDateFrom(e.target.value)}
-              className="w-full bg-gray-900 border border-gray-700 rounded-xl px-3 py-2 text-sm text-white focus:outline-none focus:border-primary-500"
-            />
+            <p className="text-xs text-gray-500 uppercase tracking-wide mb-2">Status</p>
+            <div className="flex flex-wrap gap-2">
+              {STATUS_OPTIONS.map((s) => (
+                <label key={s} className="flex items-center gap-1.5 cursor-pointer">
+                  <input
+                    type="checkbox"
+                    checked={selectedStatuses.includes(s)}
+                    onChange={() => toggleStatus(s)}
+                    className="accent-primary-500"
+                  />
+                  <span className="text-sm text-gray-300 capitalize">{s}</span>
+                </label>
+              ))}
+            </div>
           </div>
+
+          {/* Date range */}
           <div>
-            <label htmlFor="tx-date-to" className="text-xs text-gray-500 block mb-1">
-              {t('history.date_to')}
-            </label>
-            <input
-              id="tx-date-to"
-              type="date"
-              value={dateTo}
-              onChange={(e) => setDateTo(e.target.value)}
-              className="w-full bg-gray-900 border border-gray-700 rounded-xl px-3 py-2 text-sm text-white focus:outline-none focus:border-primary-500"
-            />
+            <p className="text-xs text-gray-500 uppercase tracking-wide mb-2">Date Range</p>
+            <div className="flex flex-wrap gap-2 mb-2">
+              {DATE_PRESETS.map((p) => {
+                const isActive = dateFrom === p.getFrom() && dateTo === p.getTo();
+                return (
+                  <button
+                    key={p.label}
+                    type="button"
+                    onClick={() => { setDateFrom(p.getFrom()); setDateTo(p.getTo()); }}
+                    className={`px-3 py-1 rounded-full text-xs font-medium transition-colors ${
+                      isActive ? 'bg-primary-500 text-white' : 'bg-gray-800 text-gray-400 hover:text-white'
+                    }`}
+                  >
+                    {p.label}
+                  </button>
+                );
+              })}
+            </div>
+            <div className="grid grid-cols-2 gap-2">
+              <div>
+                <label htmlFor="tx-date-from" className="text-xs text-gray-500 block mb-1">
+                  {t('history.date_from')}
+                </label>
+                <input
+                  id="tx-date-from"
+                  type="date"
+                  value={dateFrom}
+                  onChange={(e) => setDateFrom(e.target.value)}
+                  className="w-full bg-gray-800 border border-gray-700 rounded-xl px-3 py-2 text-sm text-white focus:outline-none focus:border-primary-500"
+                />
+              </div>
+              <div>
+                <label htmlFor="tx-date-to" className="text-xs text-gray-500 block mb-1">
+                  {t('history.date_to')}
+                </label>
+                <input
+                  id="tx-date-to"
+                  type="date"
+                  value={dateTo}
+                  onChange={(e) => setDateTo(e.target.value)}
+                  className="w-full bg-gray-800 border border-gray-700 rounded-xl px-3 py-2 text-sm text-white focus:outline-none focus:border-primary-500"
+                />
+              </div>
+            </div>
+          </div>
+
+          {/* Currency */}
+          <div>
+            <p className="text-xs text-gray-500 uppercase tracking-wide mb-2">{t('history.asset_label')}</p>
+            <div className="flex flex-wrap gap-2">
+              <label className="flex items-center gap-1.5 cursor-pointer">
+                <input
+                  type="radio"
+                  name="tx-asset"
+                  checked={!asset}
+                  onChange={() => setAsset('')}
+                  className="accent-primary-500"
+                />
+                <span className="text-sm text-gray-300">{t('history.asset_all')}</span>
+              </label>
+              {ASSET_OPTIONS.map((a) => (
+                <label key={a} className="flex items-center gap-1.5 cursor-pointer">
+                  <input
+                    type="radio"
+                    name="tx-asset"
+                    checked={asset === a}
+                    onChange={() => setAsset(a)}
+                    className="accent-primary-500"
+                  />
+                  <span className="text-sm text-gray-300">{a}</span>
+                </label>
+              ))}
+            </div>
+          </div>
+
+          {/* Direction */}
+          <div>
+            <p className="text-xs text-gray-500 uppercase tracking-wide mb-2">Direction</p>
+            <div className="flex gap-4">
+              {filters.map((f) => (
+                <label key={f.key} className="flex items-center gap-1.5 cursor-pointer">
+                  <input
+                    type="radio"
+                    name="tx-direction"
+                    checked={filter === f.key}
+                    onChange={() => setFilter(f.key)}
+                    className="accent-primary-500"
+                  />
+                  <span className="text-sm text-gray-300">{f.label}</span>
+                </label>
+              ))}
+            </div>
           </div>
         </div>
-        <div>
-          <label htmlFor="tx-asset" className="text-xs text-gray-500 block mb-1">
-            {t('history.asset_label')}
-          </label>
-          <select
-            id="tx-asset"
-            value={asset}
-            onChange={(e) => setAsset(e.target.value)}
-            className="w-full bg-gray-900 border border-gray-700 rounded-xl px-3 py-2 text-sm text-white focus:outline-none focus:border-primary-500"
-          >
-            <option value="">{t('history.asset_all')}</option>
-            {ASSET_OPTIONS.map((a) => (
-              <option key={a} value={a}>
-                {a}
-              </option>
-            ))}
-          </select>
+      )}
+
+      {/* Active filter chips */}
+      {activeFilterCount > 0 && (
+        <div className="flex flex-wrap gap-2 mb-4">
+          {filter !== 'all' && (
+            <span className="inline-flex items-center gap-1 px-2.5 py-1 rounded-full bg-primary-500/15 text-primary-400 text-xs font-medium">
+              {filter}
+              <button type="button" onClick={() => setFilter('all')} aria-label="Remove direction filter"><X size={11} /></button>
+            </span>
+          )}
+          {dateFrom && (
+            <span className="inline-flex items-center gap-1 px-2.5 py-1 rounded-full bg-primary-500/15 text-primary-400 text-xs font-medium">
+              From {dateFrom}
+              <button type="button" onClick={() => setDateFrom('')} aria-label="Remove from date"><X size={11} /></button>
+            </span>
+          )}
+          {dateTo && (
+            <span className="inline-flex items-center gap-1 px-2.5 py-1 rounded-full bg-primary-500/15 text-primary-400 text-xs font-medium">
+              To {dateTo}
+              <button type="button" onClick={() => setDateTo('')} aria-label="Remove to date"><X size={11} /></button>
+            </span>
+          )}
+          {asset && (
+            <span className="inline-flex items-center gap-1 px-2.5 py-1 rounded-full bg-primary-500/15 text-primary-400 text-xs font-medium">
+              {asset}
+              <button type="button" onClick={() => setAsset('')} aria-label="Remove asset filter"><X size={11} /></button>
+            </span>
+          )}
+          {selectedStatuses.map((s) => (
+            <span key={s} className="inline-flex items-center gap-1 px-2.5 py-1 rounded-full bg-primary-500/15 text-primary-400 text-xs font-medium capitalize">
+              {s}
+              <button type="button" onClick={() => toggleStatus(s)} aria-label={`Remove ${s} filter`}><X size={11} /></button>
+            </span>
+          ))}
         </div>
-      </div>
+      )}
 
-      <div className="flex gap-2 mb-6 flex-wrap">
-        {filters.map((f) => (
-          <button
-            key={f.key}
-            type="button"
-            onClick={() => setFilter(f.key)}
-            className={`px-4 py-1.5 rounded-full text-sm font-medium capitalize transition-colors ${
-              filter === f.key
-                ? 'bg-primary-500 text-white'
-                : 'bg-gray-800 text-gray-400 hover:text-white'
-            }`}
-          >
-            {f.label}
-          </button>
-        ))}
-      </div>
-
-
+      {/* Pagination info bar: page number and record count */}
+      {!loading && !error && transactions.length > 0 && (
+        <div
+          aria-live="polite"
+          className="flex items-center justify-between text-xs text-gray-500 mb-3 px-1"
+        >
+          <span>Page {currentPage}</span>
+          <span>
+            {activeFilterCount > 0
+              ? `Showing ${filtered.length} transaction${filtered.length !== 1 ? 's' : ''}`
+              : `${filtered.length} transaction${filtered.length !== 1 ? 's' : ''}`}
+            {hasMore && (
+              <span className="ml-1 text-gray-600">&middot; more available</span>
+            )}
+          </span>
+        </div>
+      )}
 
       {loading ? (
         <div className="space-y-3" aria-busy="true" aria-label="Loading transactions">
