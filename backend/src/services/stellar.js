@@ -1,7 +1,7 @@
 const StellarSdk = require('@stellar/stellar-sdk');
 const crypto = require('crypto');
 const logger = require('../utils/logger');
-const { withRetry } = require('../utils/retry');
+const { withRetry, retryWithBackoff } = require('../utils/retry');
 const { withTimeout } = require('../utils/withTimeout');
 const { enqueue } = require('../utils/txQueue');
 const {
@@ -454,7 +454,10 @@ async function _sendPaymentOnce({
   for (let attempt = 0; attempt < MAX_SEQ_RETRIES; attempt++) {
     try {
       // Fetch a fresh sequence number on every attempt
-      const senderAccount = await withFallback(s => s.loadAccount(senderPublicKey), logger);
+      const senderAccount = await retryWithBackoff(
+        () => withFallback(s => s.loadAccount(senderPublicKey), logger),
+        { label: 'loadAccount(sender)' }
+      );
 
       const txBuilder = new StellarSdk.TransactionBuilder(senderAccount, {
         fee: await feeForPriority(feePriority),
@@ -473,7 +476,10 @@ async function _sendPaymentOnce({
       const transaction = txBuilder.build();
       transaction.sign(senderKeypair);
 
-      const rawResult = await withFallback(s => s.submitTransaction(transaction), logger);
+      const rawResult = await retryWithBackoff(
+        () => withFallback(s => s.submitTransaction(transaction), logger),
+        { label: 'submitTransaction(payment)' }
+      );
       const result = validateHorizonResponse(TransactionSubmitResponseSchema, rawResult, 'submitTransaction(payment)');
       return { transactionHash: result.hash, ledger: result.ledger, type: 'payment' };
     } catch (err) {
@@ -590,10 +596,13 @@ async function _sendBatchPaymentOnce({
   let lastErr;
   for (let attempt = 0; attempt < MAX_SEQ_RETRIES; attempt++) {
     try {
-      const senderAccount = await withFallback(s => s.loadAccount(senderPublicKey));
+      const senderAccount = await retryWithBackoff(
+        () => withFallback(s => s.loadAccount(senderPublicKey)),
+        { label: 'loadAccount(batchSender)' }
+      );
 
       const txBuilder = new StellarSdk.TransactionBuilder(senderAccount, {
-        fee: await withFallback(s => s.fetchBaseFee()),
+        fee: await retryWithBackoff(() => withFallback(s => s.fetchBaseFee()), { label: 'fetchBaseFee(batch)' }),
         networkPassphrase
       });
 
@@ -614,7 +623,10 @@ async function _sendBatchPaymentOnce({
 
       transaction.sign(senderKeypair);
 
-      const result = await withFallback(s => s.submitTransaction(transaction));
+      const result = await retryWithBackoff(
+        () => withFallback(s => s.submitTransaction(transaction)),
+        { label: 'submitTransaction(batch)' }
+      );
       return {
         transactionHash: result.hash,
         ledger: result.ledger,
@@ -807,10 +819,13 @@ async function sendPathPayment({
   );
 
   return withSequenceRecovery(async () => {
-    const senderAccount = await withFallback(s => s.loadAccount(senderPublicKey), 'loadAccount');
+    const senderAccount = await retryWithBackoff(
+      () => withFallback(s => s.loadAccount(senderPublicKey), 'loadAccount'),
+      { label: 'loadAccount(pathPayment)' }
+    );
 
     const txBuilder = new StellarSdk.TransactionBuilder(senderAccount, {
-      fee: await withFallback(s => s.fetchBaseFee(), 'fetchBaseFee'),
+      fee: await retryWithBackoff(() => withFallback(s => s.fetchBaseFee(), 'fetchBaseFee'), { label: 'fetchBaseFee(path)' }),
       networkPassphrase,
     })
       .addOperation(StellarSdk.Operation.pathPaymentStrictSend({
@@ -828,7 +843,10 @@ async function sendPathPayment({
     const transaction = txBuilder.build();
     transaction.sign(senderKeypair);
 
-    const result = await withFallback(s => s.submitTransaction(transaction), 'submitTransaction');
+    const result = await retryWithBackoff(
+      () => withFallback(s => s.submitTransaction(transaction), 'submitTransaction'),
+      { label: 'submitTransaction(pathPayment)' }
+    );
     return { transactionHash: result.hash, ledger: result.ledger };
   }, senderPublicKey, senderKeypair);
 }

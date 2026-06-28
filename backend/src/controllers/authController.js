@@ -18,6 +18,7 @@ const {
   verifyDeviceToken,
 } = require('../utils/tokens');
 const { setCsrfCookie } = require('../middleware/csrf');
+const cache = require('../utils/cache');
 
 const { sendOTP } = require('../services/sms');
 const { recordSession } = require('./sessionController');
@@ -321,11 +322,16 @@ async function logout(req, res, next) {
       const hash = crypto.createHash('sha256').update(raw).digest('hex');
       // Delete the whole family so all sessions on this device are cleared
       const found = await db.query(
-        'SELECT family_id FROM refresh_tokens WHERE token_hash = $1',
+        'SELECT family_id, expires_at FROM refresh_tokens WHERE token_hash = $1',
         [hash]
       );
       if (found.rows[0]) {
         await db.query('DELETE FROM refresh_tokens WHERE family_id = $1', [found.rows[0].family_id]);
+        // Blacklist in Redis so in-flight refresh attempts are rejected immediately
+        const ttlSeconds = Math.max(0, Math.floor((new Date(found.rows[0].expires_at) - Date.now()) / 1000));
+        if (ttlSeconds > 0) {
+          await cache.set(`blacklist:rt:${hash}`, '1', ttlSeconds);
+        }
       }
     }
     res.clearCookie(COOKIE_NAME, { ...COOKIE_OPTIONS, maxAge: undefined });
@@ -552,6 +558,14 @@ async function refresh(req, res, next) {
 
     const hash = crypto.createHash('sha256').update(raw).digest('hex');
 
+    // Fast-path: check Redis blacklist before hitting the database
+    const blacklisted = await cache.get(`blacklist:rt:${hash}`);
+    if (blacklisted) {
+      logger.warn('refresh_token_blacklisted — Redis fast-reject', { event: 'refresh_token_blacklisted' });
+      res.clearCookie(COOKIE_NAME, { ...COOKIE_OPTIONS, maxAge: undefined });
+      return res.status(401).json({ error: 'Refresh token has been revoked. Please log in again.' });
+    }
+
     // Look up the token — active (not revoked) and not expired
     const result = await db.query(
       `SELECT rt.id, rt.user_id, rt.expires_at, rt.family_id, rt.revoked,
@@ -629,6 +643,12 @@ async function refresh(req, res, next) {
        VALUES ($1, $2, $3, $4, $5, FALSE)`,
       [uuidv4(), record.user_id, newHash, expiresAt, record.family_id]
     );
+
+    // Blacklist old token in Redis (TTL = remaining valid time before it would have expired)
+    const oldTtlSeconds = Math.max(0, Math.floor((new Date(record.expires_at) - Date.now()) / 1000));
+    if (oldTtlSeconds > 0) {
+      await cache.set(`blacklist:rt:${hash}`, '1', oldTtlSeconds);
+    }
 
     const token = signAccessToken({
       userId: record.user_id,
