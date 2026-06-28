@@ -12,6 +12,7 @@ pub enum TxStatus {
     Executed,
     Rejected,
     Expired,
+    Cancelled,
 }
 
 #[contracttype]
@@ -150,6 +151,21 @@ impl MultisigContract {
     pub fn get_proposal(env: Env, tx_id: u64) -> Proposal {
         env.storage().persistent().get(&DataKey::Proposal(tx_id))
             .expect("proposal not found")
+    }
+
+    /// Cancel a pending proposal. Only the original proposer may call this, and only before expiry.
+    pub fn cancel_proposal(env: Env, proposer: Address, tx_id: u64) {
+        proposer.require_auth();
+
+        let mut proposal: Proposal = env.storage().persistent().get(&DataKey::Proposal(tx_id))
+            .expect("proposal not found");
+
+        assert!(proposal.proposer == proposer, "only the proposer can cancel");
+        assert!(proposal.status == TxStatus::Pending, "not pending");
+        assert!(env.ledger().timestamp() < proposal.expires_at, "proposal expired");
+
+        proposal.status = TxStatus::Cancelled;
+        env.storage().persistent().set(&DataKey::Proposal(tx_id), &proposal);
     }
 
     /// Propose a quorum threshold change. Any approver may propose.

@@ -315,6 +315,61 @@ fn test_mixed_votes_pending_until_decided() {
     assert_eq!(client.get_proposal(&tx_id).status, TxStatus::Executed);
 }
 
+// ── #554: cancel_proposal ────────────────────────────────────────────────────
+
+#[test]
+fn test_cancel_proposal_sets_status_cancelled() {
+    let (env, contract_id, approvers, _) = setup(2, 3);
+    let client = MultisigContractClient::new(&env, &contract_id);
+    let proposer = approvers.get(0).unwrap();
+    let tx_id = propose(&env, &contract_id, &proposer);
+    client.cancel_proposal(&proposer, &tx_id);
+    assert_eq!(client.get_proposal(&tx_id).status, TxStatus::Cancelled);
+}
+
+#[test]
+#[should_panic(expected = "only the proposer can cancel")]
+fn test_cancel_proposal_by_non_proposer_panics() {
+    let (env, contract_id, approvers, _) = setup(2, 3);
+    let client = MultisigContractClient::new(&env, &contract_id);
+    let proposer = approvers.get(0).unwrap();
+    let tx_id = propose(&env, &contract_id, &proposer);
+    client.cancel_proposal(&approvers.get(1).unwrap(), &tx_id);
+}
+
+#[test]
+#[should_panic(expected = "not pending")]
+fn test_cancel_proposal_already_executed_panics() {
+    let (env, contract_id, approvers, _) = setup(1, 2);
+    let client = MultisigContractClient::new(&env, &contract_id);
+    let proposer = approvers.get(0).unwrap();
+    let tx_id = propose(&env, &contract_id, &proposer);
+    client.approve(&proposer, &tx_id); // executes immediately (quorum 1)
+    client.cancel_proposal(&proposer, &tx_id);
+}
+
+#[test]
+#[should_panic(expected = "proposal expired")]
+fn test_cancel_proposal_after_expiry_panics() {
+    let (env, contract_id, approvers, _) = setup(2, 3);
+    let client = MultisigContractClient::new(&env, &contract_id);
+    let proposer = approvers.get(0).unwrap();
+    let tx_id = propose(&env, &contract_id, &proposer);
+    env.ledger().with_mut(|l| l.timestamp += 86_401);
+    client.cancel_proposal(&proposer, &tx_id);
+}
+
+#[test]
+#[should_panic(expected = "not pending")]
+fn test_approve_cancelled_proposal_panics() {
+    let (env, contract_id, approvers, _) = setup(2, 3);
+    let client = MultisigContractClient::new(&env, &contract_id);
+    let proposer = approvers.get(0).unwrap();
+    let tx_id = propose(&env, &contract_id, &proposer);
+    client.cancel_proposal(&proposer, &tx_id);
+    client.approve(&approvers.get(1).unwrap(), &tx_id);
+}
+
 // ── quorum change ─────────────────────────────────────────────────────────────
 
 #[test]

@@ -8,6 +8,8 @@ mod test;
 #[contracttype]
 pub enum DataKey {
     TokenAddress,
+    Admin,
+    FeeBps,
     Schedule(u64),
     Counter,
 }
@@ -95,14 +97,24 @@ pub struct RecurringPaymentsContract;
 
 #[contractimpl]
 impl RecurringPaymentsContract {
-    /// One-time initializer — stores the token (USDC) contract address.
-    pub fn initialize(env: Env, token_address: Address) {
+    /// One-time initializer — stores the admin, token (USDC) address, and fee in basis points.
+    /// `fee_bps` of 0 disables fee collection; max is 10 000 (100 %).
+    pub fn initialize(env: Env, admin: Address, token_address: Address, fee_bps: u32) {
         if env.storage().persistent().has(&DataKey::TokenAddress) {
             panic!("already initialized");
+        }
+        if fee_bps > 10_000 {
+            panic!("fee_bps must be <= 10000");
         }
         env.storage()
             .persistent()
             .set(&DataKey::TokenAddress, &token_address);
+        env.storage()
+            .persistent()
+            .set(&DataKey::Admin, &admin);
+        env.storage()
+            .persistent()
+            .set(&DataKey::FeeBps, &fee_bps);
         env.storage()
             .persistent()
             .set(&DataKey::Counter, &0u64);
@@ -214,13 +226,39 @@ impl RecurringPaymentsContract {
             .get(&DataKey::TokenAddress)
             .expect("not initialized");
 
-        // Pull funds directly from sender → recipient (no custody).
-        token::Client::new(&env, &token_address).transfer_from(
+        let fee_bps: u32 = env
+            .storage()
+            .persistent()
+            .get(&DataKey::FeeBps)
+            .unwrap_or(0);
+
+        let fee_amount = if fee_bps > 0 {
+            schedule.amount * fee_bps as i128 / 10_000
+        } else {
+            0
+        };
+        let net_amount = schedule.amount - fee_amount;
+
+        let token = token::Client::new(&env, &token_address);
+        token.transfer_from(
             &env.current_contract_address(),
             &schedule.sender,
             &schedule.recipient,
-            &schedule.amount,
+            &net_amount,
         );
+        if fee_amount > 0 {
+            let admin: Address = env
+                .storage()
+                .persistent()
+                .get(&DataKey::Admin)
+                .expect("not initialized");
+            token.transfer_from(
+                &env.current_contract_address(),
+                &schedule.sender,
+                &admin,
+                &fee_amount,
+            );
+        }
 
         schedule.next_payment_at = now + schedule.interval;
         schedule.executions_completed += 1;
