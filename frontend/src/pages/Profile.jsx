@@ -1490,6 +1490,43 @@ export default function Profile() {
         </div>
       </div>
 
+      {/* Notification Preferences */}
+      {'serviceWorker' in navigator && 'PushManager' in window && (() => {
+        const PREFS_KEY = 'afripay_notification_prefs';
+        const defaultPrefs = { payment_confirmed: true, payment_received: true, kyc_approved: true };
+        let prefs;
+        try { prefs = { ...defaultPrefs, ...JSON.parse(localStorage.getItem(PREFS_KEY) || '{}') }; }
+        catch { prefs = defaultPrefs; }
+        const savePrefs = (key, value) => {
+          const updated = { ...prefs, [key]: value };
+          localStorage.setItem(PREFS_KEY, JSON.stringify(updated));
+        };
+        const NotifToggle = ({ label, prefKey }) => {
+          const [on, setOn] = React.useState(prefs[prefKey]);
+          return (
+            <div className="flex items-center justify-between py-2">
+              <span className="text-sm text-gray-300">{label}</span>
+              <button
+                role="switch"
+                aria-checked={on}
+                onClick={() => { const next = !on; setOn(next); savePrefs(prefKey, next); }}
+                className={`relative w-10 h-6 rounded-full transition-colors ${on ? 'bg-primary-600' : 'bg-gray-700'}`}
+              >
+                <span className={`absolute top-1 w-4 h-4 bg-white rounded-full transition-transform ${on ? 'translate-x-5' : 'translate-x-1'}`} />
+              </button>
+            </div>
+          );
+        };
+        return (
+          <div className="bg-gray-900 rounded-2xl p-5">
+            <h3 className="font-semibold text-white mb-3">Notification Preferences</h3>
+            <NotifToggle label="Payment confirmed" prefKey="payment_confirmed" />
+            <NotifToggle label="Payment received" prefKey="payment_received" />
+            <NotifToggle label="KYC approved" prefKey="kyc_approved" />
+          </div>
+        );
+      })()}
+
       {/* Close Account */}
       <div className="bg-gray-900 rounded-2xl p-5">
         <div className="flex items-center justify-between mb-1">
