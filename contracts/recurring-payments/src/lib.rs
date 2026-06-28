@@ -22,6 +22,7 @@ pub type IntervalSecs = u64;
 pub enum ScheduleStatus {
     Active,
     Cancelled,
+    Paused,
 }
 
 #[derive(Clone)]
@@ -72,6 +73,18 @@ pub struct PaymentExecuted {
 #[derive(Clone)]
 #[contracttype]
 pub struct ScheduleCancelled {
+    pub id: u64,
+}
+
+#[derive(Clone)]
+#[contracttype]
+pub struct SchedulePaused {
+    pub id: u64,
+}
+
+#[derive(Clone)]
+#[contracttype]
+pub struct ScheduleResumed {
     pub id: u64,
 }
 
@@ -234,6 +247,7 @@ impl RecurringPaymentsContract {
     }
 
     /// Cancel a recurring schedule. Only the original sender may cancel.
+    /// A paused schedule may also be cancelled.
     pub fn cancel_recurring_payment(env: Env, sender: Address, schedule_id: u64) {
         sender.require_auth();
 
@@ -246,8 +260,8 @@ impl RecurringPaymentsContract {
         if schedule.sender != sender {
             panic!("only the sender can cancel");
         }
-        if schedule.status != ScheduleStatus::Active {
-            panic!("schedule is not active");
+        if schedule.status == ScheduleStatus::Cancelled {
+            panic!("schedule is already cancelled");
         }
 
         schedule.status = ScheduleStatus::Cancelled;
@@ -258,6 +272,63 @@ impl RecurringPaymentsContract {
         env.events().publish(
             (Symbol::new(&env, "ScheduleCancelled"),),
             ScheduleCancelled { id: schedule_id },
+        );
+    }
+
+    /// Pause a recurring schedule. Only the original sender may pause.
+    /// A paused schedule will not execute until resumed.
+    pub fn pause_recurring_payment(env: Env, sender: Address, schedule_id: u64) {
+        sender.require_auth();
+
+        let mut schedule: RecurringSchedule = env
+            .storage()
+            .persistent()
+            .get(&DataKey::Schedule(schedule_id))
+            .expect("schedule not found");
+
+        if schedule.sender != sender {
+            panic!("only the sender can pause");
+        }
+        if schedule.status != ScheduleStatus::Active {
+            panic!("schedule is not active");
+        }
+
+        schedule.status = ScheduleStatus::Paused;
+        env.storage()
+            .persistent()
+            .set(&DataKey::Schedule(schedule_id), &schedule);
+
+        env.events().publish(
+            (Symbol::new(&env, "SchedulePaused"),),
+            SchedulePaused { id: schedule_id },
+        );
+    }
+
+    /// Resume a paused recurring schedule. Only the original sender may resume.
+    pub fn resume_recurring_payment(env: Env, sender: Address, schedule_id: u64) {
+        sender.require_auth();
+
+        let mut schedule: RecurringSchedule = env
+            .storage()
+            .persistent()
+            .get(&DataKey::Schedule(schedule_id))
+            .expect("schedule not found");
+
+        if schedule.sender != sender {
+            panic!("only the sender can resume");
+        }
+        if schedule.status != ScheduleStatus::Paused {
+            panic!("schedule is not paused");
+        }
+
+        schedule.status = ScheduleStatus::Active;
+        env.storage()
+            .persistent()
+            .set(&DataKey::Schedule(schedule_id), &schedule);
+
+        env.events().publish(
+            (Symbol::new(&env, "ScheduleResumed"),),
+            ScheduleResumed { id: schedule_id },
         );
     }
 
