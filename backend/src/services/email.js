@@ -140,4 +140,21 @@ async function sendTransactionEmail(email, type, tx) {
   });
 }
 
-module.exports = { sendVerificationEmail, sendPasswordResetEmail, sendTransactionEmail };
+async function sendKycExpiryReminderEmail(email, name, daysRemaining) {
+  const subject = `Action required: Your AfriPay identity document expires in ${daysRemaining} day${daysRemaining !== 1 ? 's' : ''}`;
+  const html = `
+    <p>Hi ${name},</p>
+    <p>Your identity document on file with AfriPay will expire in <strong>${daysRemaining} day${daysRemaining !== 1 ? 's' : ''}</strong>.</p>
+    <p>To continue using AfriPay without interruption, please re-submit your KYC documents before the expiry date.</p>
+    <p><a href="${process.env.FRONTEND_URL}/kyc">Re-verify my identity</a></p>
+    <p style="font-size:12px;color:#9ca3af">If you have already re-submitted, you can ignore this reminder.</p>
+  `;
+  await transporter.sendMail({
+    from: process.env.SMTP_FROM || process.env.SMTP_USER,
+    to: email,
+    subject,
+    html,
+  });
+}
+
+module.exports = { sendVerificationEmail, sendPasswordResetEmail, sendTransactionEmail, sendKycExpiryReminderEmail };
