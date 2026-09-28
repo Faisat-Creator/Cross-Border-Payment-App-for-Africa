@@ -118,7 +118,7 @@ export default function SendMoney() {
         }));
       })
       .catch(() => {});
-  }, [requestId]); // eslint-disable-line react-hooks/exhaustive-deps
+  }, [requestId]); // eslint-disable-line react-hooks/exhaustive-deps -- prefill once per request id; must not overwrite later user edits
   const { currencies, convertFromXLM, usingApproximateRates } = useExchangeRates();
   const [pathResult, setPathResult] = useState(null);
   const [pathLoading, setPathLoading] = useState(false);
@@ -280,7 +280,7 @@ export default function SendMoney() {
         }
       })
       .catch(() => {});
-  }, []); // eslint-disable-line react-hooks/exhaustive-deps
+  }, []); // eslint-disable-line react-hooks/exhaustive-deps -- one-time initialisation on mount
 
   useEffect(() => {
     api

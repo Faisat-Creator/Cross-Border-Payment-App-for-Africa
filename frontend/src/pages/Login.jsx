@@ -82,7 +82,7 @@ export default function Login() {
     try {
       // Device-trust is now carried by an httpOnly cookie the backend sets on login
       // (issue #995) — the browser attaches it automatically, no localStorage needed.
-      await login(
+      const result = await login(
         form.email,
         form.password,
         rememberDevice ? { rememberDevice: true } : {}

@@ -25,7 +25,7 @@ export default function ScheduledPayments() {
 
   useEffect(() => {
     fetchPayments();
-  }, []);
+  }, []); // eslint-disable-line react-hooks/exhaustive-deps -- load once on mount
 
   const fetchPayments = async () => {
     try {
