@@ -1,6 +1,7 @@
 'use strict';
 
 const https = require('https');
+const { isValidEvent } = require('./webhookEvents');
 const db = require('../db');
 const { sign, buildSignatureHeader } = require('../utils/webhookSignature');
 const { validateOutboundUrl } = require('../utils/ssrf');
@@ -193,6 +194,9 @@ async function retryDelivery(deliveryId) {
  * @returns {Promise<void>}
  */
 async function deliver(event, data) {
+  if (!isValidEvent(event)) {
+    throw new Error(`Unknown webhook event "${event}" — add it to services/webhookEvents.js`);
+  }
   const { rows } = await db.query(
     `SELECT id, url, secret, previous_secret, previous_secret_expires_at
      FROM webhooks WHERE active = true AND $1 = ANY(events)`,

@@ -1,5 +1,6 @@
 import React, { createContext, useContext, useState, useEffect, useRef } from 'react';
 import * as Sentry from '@sentry/react';
+import api, { refreshSession } from '../utils/api';
 import api from '../utils/api';
 import { clearUserStorage } from '../utils/userStorage';
 
@@ -29,9 +30,9 @@ export function AuthProvider({ children }) {
   // On mount: attempt a silent refresh using the httpOnly cookie.
   // If the cookie is valid the backend returns a new access token.
   useEffect(() => {
-    api.post('/auth/refresh', {})
-      .then((res) => {
-        tokenStore.set(res.data.token);
+    refreshSession()
+      .then((token) => {
+        tokenStore.set(token);
         return api.get('/auth/me');
       })
       .then((res) => setUser(res.data))

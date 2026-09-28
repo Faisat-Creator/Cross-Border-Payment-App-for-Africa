@@ -5,30 +5,39 @@ const { validateOutboundUrl } = require('../utils/ssrf');
 const { encryptSecret, decryptSecret } = require('../utils/symmetricEncryption');
 const { retryDelivery } = require('../services/webhook');
 
-const VALID_EVENTS = ['payment.sent', 'payment.received', 'payment.failed'];
+const { WEBHOOK_EVENTS: VALID_EVENTS } = require('../services/webhookEvents');
+
+// Shared URL validation for create/update: HTTPS-only + SSRF check.
+async function validateWebhookUrl(url) {
+  let parsedUrl;
+  try {
+    parsedUrl = new URL(url);
+  } catch {
+    return { status: 400, body: { error: 'Invalid URL format' } };
+  }
+  if (parsedUrl.protocol !== 'https:') {
+    return { status: 400, body: { error: 'Webhook URL must use HTTPS' } };
+  }
+  const ssrfCheck = await validateOutboundUrl(url);
+  if (!ssrfCheck.valid) {
+    return {
+      status: 400,
+      body: {
+        error: 'SSRF_BLOCKED',
+        message: 'The provided URL resolves to a restricted network range.',
+      },
+    };
+  }
+  return null;
+}
 
 async function create(req, res, next) {
   try {
     const { url, events } = req.body;
 
     // Webhook endpoints must be HTTPS to protect the HMAC secret in transit
-    let parsedUrl;
-    try {
-      parsedUrl = new URL(url);
-    } catch {
-      return res.status(400).json({ error: 'Invalid URL format' });
-    }
-    if (parsedUrl.protocol !== 'https:') {
-      return res.status(400).json({ error: 'Webhook URL must use HTTPS' });
-    }
-
-    const ssrfCheck = await validateOutboundUrl(url);
-    if (!ssrfCheck.valid) {
-      return res.status(400).json({
-        error: 'SSRF_BLOCKED',
-        message: 'The provided URL resolves to a restricted network range.',
-      });
-    }
+    const urlError = await validateWebhookUrl(url);
+    if (urlError) return res.status(urlError.status).json(urlError.body);
 
     const invalidEvents = (events || []).filter((e) => !VALID_EVENTS.includes(e));
     if (invalidEvents.length) {
@@ -175,13 +184,8 @@ async function update(req, res, next) {
     if (!owned.length) return res.status(404).json({ error: 'Webhook not found' });
 
     if (url !== undefined) {
-      const ssrfCheck = await validateOutboundUrl(url);
-      if (!ssrfCheck.valid) {
-        return res.status(400).json({
-          error: 'SSRF_BLOCKED',
-          message: 'The provided URL resolves to a restricted network range.',
-        });
-      }
+      const urlError = await validateWebhookUrl(url);
+      if (urlError) return res.status(urlError.status).json(urlError.body);
     }
 
     const invalidEvents = (events || []).filter((e) => !VALID_EVENTS.includes(e));
