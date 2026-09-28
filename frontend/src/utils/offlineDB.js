@@ -14,6 +14,23 @@
 
 import { openDB } from 'idb';
 
+/**
+ * Generate a RFC-4122 v4 UUID.
+ * Uses `crypto.randomUUID()` when available (all modern browsers), falling back
+ * to a manual implementation so the module works in test environments.
+ */
+function generateUUID() {
+  if (typeof crypto !== 'undefined' && typeof crypto.randomUUID === 'function') {
+    return crypto.randomUUID();
+  }
+  // Polyfill: manually assemble a v4 UUID from random bytes
+  return 'xxxxxxxx-xxxx-4xxx-yxxx-xxxxxxxxxxxx'.replace(/[xy]/g, (c) => {
+    const r = (Math.random() * 16) | 0;
+    const v = c === 'x' ? r : (r & 0x3) | 0x8;
+    return v.toString(16);
+  });
+}
+
 const DB_NAME    = 'afripay-offline';
 const DB_VERSION = 1;
 
@@ -67,15 +84,39 @@ export async function getCacheEntry(key) {
 
 /**
  * Add a payment to the offline queue.
+ *
+ * An idempotency key is generated **once** at queue time and stored alongside
+ * the payload.  Every subsequent replay attempt (including resumptions after a
+ * mid-replay connectivity drop) must reuse the same key so that the backend
+ * idempotency middleware can deduplicate the request and prevent duplicate
+ * payments.
+ *
  * @param {{ recipient_address: string, amount: string, asset: string, memo?: string, memo_type?: string }} payload
+ * @returns {Promise<IDBValidKey>} The auto-incremented id of the new queue entry
  */
 export async function enqueuePayment(payload) {
   const db = await getDB();
-  await db.add('queue', {
+  return db.add('queue', {
     payload,
+    idempotencyKey: generateUUID(), // assigned once, never regenerated on replay
     createdAt: Date.now(),
     status: 'pending',   // 'pending' | 'syncing' | 'failed'
   });
+}
+
+/**
+ * Update the status of a queued payment without replacing its idempotency key.
+ * Used by the replay logic to mark items as 'syncing' or 'failed' between
+ * connectivity changes so the key is never discarded mid-flight.
+ *
+ * @param {number} id - The auto-incremented queue entry id
+ * @param {'pending'|'syncing'|'failed'} status
+ */
+export async function updateQueuedPaymentStatus(id, status) {
+  const db = await getDB();
+  const entry = await db.get('queue', id);
+  if (!entry) return;
+  await db.put('queue', { ...entry, status });
 }
 
 /**

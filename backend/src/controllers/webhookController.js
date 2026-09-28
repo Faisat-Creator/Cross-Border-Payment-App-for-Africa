@@ -1,62 +1,33 @@
 const crypto = require('crypto');
-const dns = require('dns').promises;
 const db = require('../db');
+const { validatePublicUrl } = require('../utils/ssrfValidator');
+const { validateOutboundUrl } = require('../utils/ssrf');
+const { encryptSecret, decryptSecret } = require('../utils/symmetricEncryption');
+const { retryDelivery } = require('../services/webhook');
 
 const VALID_EVENTS = ['payment.sent', 'payment.received', 'payment.failed'];
-
-// RFC 1918, loopback, link-local, and cloud metadata ranges
-const BLOCKED_CIDRS = [
-  [0x0a000000, 0xff000000],   // 10.0.0.0/8
-  [0xac100000, 0xfff00000],   // 172.16.0.0/12
-  [0xc0a80000, 0xffff0000],   // 192.168.0.0/16
-  [0x7f000000, 0xff000000],   // 127.0.0.0/8  (loopback)
-  [0xa9fe0000, 0xffff0000],   // 169.254.0.0/16 (link-local / metadata)
-  [0x64400000, 0xffc00000],   // 100.64.0.0/10 (shared address space)
-  [0x00000000, 0xff000000],   // 0.0.0.0/8
-  [0xe0000000, 0xf0000000],   // 224.0.0.0/4  (multicast)
-  [0xf0000000, 0xf0000000],   // 240.0.0.0/4  (reserved)
-];
-
-function ipToInt(ip) {
-  return ip.split('.').reduce((acc, octet) => (acc << 8) + parseInt(octet, 10), 0) >>> 0;
-}
-
-function isPrivateIp(ip) {
-  // IPv6 loopback / link-local
-  if (ip === '::1' || ip.startsWith('fe80') || ip.startsWith('fc') || ip.startsWith('fd')) return true;
-  // Only check IPv4
-  if (!/^\d{1,3}(\.\d{1,3}){3}$/.test(ip)) return false;
-  const n = ipToInt(ip);
-  return BLOCKED_CIDRS.some(([net, mask]) => (n & mask) === (net & mask));
-}
-
-async function validatePublicUrl(url) {
-  let parsed;
-  try { parsed = new URL(url); } catch { return false; }
-  if (parsed.protocol !== 'https:') return false;
-
-  // Reject if hostname is a bare IP
-  const hostname = parsed.hostname;
-  if (/^\d{1,3}(\.\d{1,3}){3}$/.test(hostname)) {
-    if (isPrivateIp(hostname)) return false;
-  }
-
-  // Resolve hostname and check all returned IPs
-  try {
-    const { address } = await dns.lookup(hostname);
-    if (isPrivateIp(address)) return false;
-  } catch {
-    return false; // unresolvable hostname
-  }
-  return true;
-}
 
 async function create(req, res, next) {
   try {
     const { url, events } = req.body;
 
-    if (!await validatePublicUrl(url)) {
-      return res.status(400).json({ error: 'Webhook URL must point to a public HTTPS endpoint' });
+    // Webhook endpoints must be HTTPS to protect the HMAC secret in transit
+    let parsedUrl;
+    try {
+      parsedUrl = new URL(url);
+    } catch {
+      return res.status(400).json({ error: 'Invalid URL format' });
+    }
+    if (parsedUrl.protocol !== 'https:') {
+      return res.status(400).json({ error: 'Webhook URL must use HTTPS' });
+    }
+
+    const ssrfCheck = await validateOutboundUrl(url);
+    if (!ssrfCheck.valid) {
+      return res.status(400).json({
+        error: 'SSRF_BLOCKED',
+        message: 'The provided URL resolves to a restricted network range.',
+      });
     }
 
     const invalidEvents = (events || []).filter((e) => !VALID_EVENTS.includes(e));
@@ -64,15 +35,18 @@ async function create(req, res, next) {
       return res.status(400).json({ error: `Invalid events: ${invalidEvents.join(', ')}` });
     }
 
-    const secret = crypto.randomBytes(32).toString('hex');
+    const plainSecret = crypto.randomBytes(32).toString('hex');
+    const encryptedSecret = encryptSecret(plainSecret);
+
     const { rows } = await db.query(
       `INSERT INTO webhooks (user_id, url, secret, events)
        VALUES ($1, $2, $3, $4)
        RETURNING id, url, events, active, created_at`,
-      [req.user.userId, url, secret, events || []]
+      [req.user.userId, url, encryptedSecret, events || []]
     );
 
-    res.status(201).json({ ...rows[0], secret });
+    // Return the plain secret once — it will not be shown again
+    res.status(201).json({ ...rows[0], secret: plainSecret });
   } catch (err) {
     next(err);
   }
@@ -81,13 +55,154 @@ async function create(req, res, next) {
 async function list(req, res, next) {
   try {
     const { rows } = await db.query(
-      `SELECT id, url, events, active, created_at FROM webhooks WHERE user_id = $1 ORDER BY created_at DESC`,
+      `SELECT id, url, events, active, created_at, secret FROM webhooks WHERE user_id = $1 ORDER BY created_at DESC`,
       [req.user.userId]
     );
-    res.json({ webhooks: rows });
+
+    const webhooks = rows.map((wh) => {
+      let secretMasked = null;
+      if (wh.secret) {
+        try {
+          const plain = decryptSecret(wh.secret);
+          secretMasked = plain.slice(0, 4) + '****';
+        } catch {
+          secretMasked = '****';
+        }
+      }
+      const { secret: _omit, ...rest } = wh;
+      return { ...rest, secret_masked: secretMasked };
+    });
+
+    res.json({ webhooks });
   } catch (err) {
     next(err);
   }
 }
 
-module.exports = { create, list };
+async function listDeliveries(req, res, next) {
+  try {
+    const { webhook_id } = req.query;
+    let query = `
+      SELECT wd.id, wd.webhook_id, wd.event_type, wd.target_url, wd.status_code,
+             wd.response_time_ms, wd.status, wd.attempt, wd.max_attempts, wd.error_message,
+             wd.created_at, wd.completed_at
+      FROM webhook_deliveries wd
+      JOIN webhooks w ON w.id = wd.webhook_id
+      WHERE w.user_id = $1
+    `;
+    const params = [req.user.userId];
+    if (webhook_id) {
+      params.push(webhook_id);
+      query += ` AND wd.webhook_id = $${params.length}`;
+    }
+    query += ` ORDER BY wd.created_at DESC LIMIT 100`;
+    const { rows } = await db.query(query, params);
+    res.json({ deliveries: rows });
+  } catch (err) {
+    next(err);
+  }
+}
+
+const ROTATION_OVERLAP_HOURS = parseInt(process.env.WEBHOOK_SECRET_ROTATION_OVERLAP_HOURS || '24', 10);
+
+/**
+ * POST /api/webhooks/:id/rotate-secret
+ * Issues a new signing secret while keeping the old one valid for a grace
+ * window, so in-flight deliveries and not-yet-updated verifiers don't break.
+ */
+async function rotateSecret(req, res, next) {
+  try {
+    const { id } = req.params;
+
+    const { rows } = await db.query(
+      `SELECT id, secret FROM webhooks WHERE id = $1 AND user_id = $2`,
+      [id, req.user.userId]
+    );
+    if (!rows.length) {
+      return res.status(404).json({ error: 'Webhook not found' });
+    }
+
+    const newPlainSecret = crypto.randomBytes(32).toString('hex');
+    const newEncryptedSecret = encryptSecret(newPlainSecret);
+
+    const { rows: updated } = await db.query(
+      `UPDATE webhooks
+          SET secret = $1,
+              previous_secret = $2,
+              previous_secret_expires_at = NOW() + ($3 || ' hours')::interval
+        WHERE id = $4
+        RETURNING id, url, events, active, created_at, previous_secret_expires_at`,
+      [newEncryptedSecret, rows[0].secret, ROTATION_OVERLAP_HOURS, id]
+    );
+
+    // Return the plain secret once — it will not be shown again
+    res.json({ ...updated[0], secret: newPlainSecret, rotation_overlap_hours: ROTATION_OVERLAP_HOURS });
+  } catch (err) {
+    next(err);
+  }
+}
+
+async function retry(req, res, next) {
+  try {
+    const { id } = req.params;
+    // Verify ownership
+    const { rows } = await db.query(
+      `SELECT wd.id FROM webhook_deliveries wd
+       JOIN webhooks w ON w.id = wd.webhook_id
+       WHERE wd.id = $1 AND w.user_id = $2`,
+      [id, req.user.userId]
+    );
+    if (!rows.length) {
+      return res.status(404).json({ error: 'Delivery not found or not owned by user' });
+    }
+    await retryDelivery(id);
+    res.json({ message: 'Retry initiated' });
+  } catch (err) {
+    next(err);
+  }
+}
+
+async function update(req, res, next) {
+  try {
+    const { id } = req.params;
+    const { url, events, active } = req.body;
+
+    // Verify ownership
+    const { rows: owned } = await db.query(
+      `SELECT id FROM webhooks WHERE id = $1 AND user_id = $2`,
+      [id, req.user.userId]
+    );
+    if (!owned.length) return res.status(404).json({ error: 'Webhook not found' });
+
+    if (url !== undefined) {
+      const ssrfCheck = await validateOutboundUrl(url);
+      if (!ssrfCheck.valid) {
+        return res.status(400).json({
+          error: 'SSRF_BLOCKED',
+          message: 'The provided URL resolves to a restricted network range.',
+        });
+      }
+    }
+
+    const invalidEvents = (events || []).filter((e) => !VALID_EVENTS.includes(e));
+    if (invalidEvents.length) {
+      return res.status(400).json({ error: `Invalid events: ${invalidEvents.join(', ')}` });
+    }
+
+    const { rows } = await db.query(
+      `UPDATE webhooks
+       SET url = COALESCE($1, url),
+           events = COALESCE($2, events),
+           active = COALESCE($3, active)
+       WHERE id = $4 AND user_id = $5
+       RETURNING id, url, events, active, created_at`,
+      [url || null, events || null, active !== undefined ? active : null, id, req.user.userId]
+    );
+
+    res.json(rows[0]);
+  } catch (err) {
+    next(err);
+  }
+}
+
+module.exports = { create, update, list, listDeliveries, retry, rotateSecret };

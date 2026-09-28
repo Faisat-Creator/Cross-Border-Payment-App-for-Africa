@@ -14,8 +14,7 @@
 const StellarSdk = require("@stellar/stellar-sdk");
 const crypto = require("crypto");
 
-const ALGORITHM = "aes-256-cbc";
-const ENCRYPTION_KEY = process.env.ENCRYPTION_KEY;
+const { decryptAesCbc } = require("../utils/symmetricEncryption");
 
 const isTestnet = process.env.STELLAR_NETWORK !== "mainnet";
 const networkPassphrase = isTestnet
@@ -35,10 +34,7 @@ function getRpc() {
 }
 
 function decryptSecret(encryptedKey) {
-  const [ivHex, encrypted] = encryptedKey.split(":");
-  const iv = Buffer.from(ivHex, "hex");
-  const decipher = crypto.createDecipheriv(ALGORITHM, Buffer.from(ENCRYPTION_KEY), iv);
-  return decipher.update(encrypted, "hex", "utf8") + decipher.final("utf8");
+  return decryptAesCbc(encryptedKey);
 }
 
 /**
@@ -133,4 +129,17 @@ async function revokeKyc(adminPublicKey, userWalletAddress) {
   return invokeAdmin("revoke", args);
 }
 
-module.exports = { attestKyc, revokeKyc };
+/**
+ * Public key of the admin wallet configured via ADMIN_ENCRYPTED_SECRET_KEY.
+ * Used by system jobs (e.g. kycExpiryJob) that need to call attest/revoke
+ * without an authenticated admin request in context.
+ */
+function getAdminPublicKey() {
+  const encryptedKey = process.env.ADMIN_ENCRYPTED_SECRET_KEY;
+  if (!encryptedKey) {
+    throw Object.assign(new Error("ADMIN_ENCRYPTED_SECRET_KEY is not configured"), { status: 500 });
+  }
+  return StellarSdk.Keypair.fromSecret(decryptSecret(encryptedKey)).publicKey();
+}
+
+module.exports = { attestKyc, revokeKyc, getAdminPublicKey };

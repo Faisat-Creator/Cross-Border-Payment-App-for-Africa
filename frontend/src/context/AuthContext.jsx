@@ -35,8 +35,11 @@ export function AuthProvider({ children }) {
       .finally(() => setLoading(false));
   }, []);
 
-  const login = async (email, password) => {
-    const res = await api.post('/auth/login', { email, password });
+  // Device-trust is carried by an httpOnly cookie the backend sets on login
+  // (issue #995) — the browser attaches it automatically via withCredentials,
+  // so no token is read from or written to localStorage here.
+  const login = async (email, password, options = {}) => {
+    const res = await api.post('/auth/login', { email, password, ...options });
     tokenStore.set(res.data.token);
     setUser(res.data.user);
     Sentry.setUser({
@@ -63,7 +66,7 @@ export function AuthProvider({ children }) {
     Sentry.setUser(null);
   };
 
-  const updateUser = (fields) => setUser((prev) => (prev ? { ...prev, ...fields } : prev));
+  const updateUser = (fields) => setUser((prev) => (prev ? { ...prev, ...fields } : fields));
 
   return (
     <AuthContext.Provider value={{ user, loading, login, register, logout, updateUser }}>

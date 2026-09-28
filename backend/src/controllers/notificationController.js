@@ -1,6 +1,8 @@
 const db = require('../db');
 const webpush = require('../services/webpush');
 const { startStreamForUser, stopStreamForUser } = require('../services/horizonWorker');
+const { persistAndBroadcast } = require('../services/notificationInbox');
+const logger = require('../utils/logger');
 
 /**
  * POST /api/notifications/subscribe
@@ -71,23 +73,73 @@ async function unsubscribe(req, res, next) {
 /**
  * Send a Web Push notification to a specific user by their DB user id.
  * Called internally by the Horizon streaming worker.
+ * Also persists to in-app notification inbox and broadcasts via Socket.IO.
  */
 async function sendPushToUser(userId, payload) {
   const { rows } = await db.query(
-    'SELECT push_subscription FROM users WHERE id = $1',
+    'SELECT id, push_subscription, push_subscription_active FROM users WHERE id = $1',
     [userId],
   );
-  const sub = rows[0]?.push_subscription;
-  if (!sub) return; // user hasn't subscribed
+  const row = rows[0];
 
-  try {
-    await webpush.sendNotification(sub, JSON.stringify(payload));
-  } catch (err) {
-    // 410 Gone = subscription expired/revoked — clean it up
-    if (err.statusCode === 410) {
-      await db.query('UPDATE users SET push_subscription = NULL WHERE id = $1', [userId]);
+  if (payload) {
+    try {
+      await persistAndBroadcast(userId, 'push', payload.title, payload.body, payload.data);
+    } catch (err) {
+      logger.warn('Failed to persist notification', { error: err.message, userId });
     }
+  }
+
+  if (!row?.push_subscription) return;
+
+  // Subscription has been deactivated after repeated delivery failures —
+  // don't waste a send attempt until the user re-subscribes.
+  if (row.push_subscription_active === false) return;
+
+  // Failures (including permanent 410/404) are tracked and, if needed,
+  // deactivated inside webpush.sendNotification — nothing further to do here.
+  await webpush.sendNotification(row.push_subscription, JSON.stringify(payload), row.id, db).catch(() => {});
+}
+
+/**
+ * GET /api/notifications/subscription-health
+ * Lets the frontend (PushNotificationPrompt.jsx) know whether the user's
+ * push subscription has been deactivated after repeated delivery failures,
+ * so it can re-prompt the user to re-subscribe.
+ */
+async function getSubscriptionHealth(req, res, next) {
+  try {
+    const { rows } = await db.query(
+      `SELECT push_subscription IS NOT NULL AS has_subscription,
+              COALESCE(push_subscription_active, true) AS active,
+              COALESCE(push_failure_count, 0) AS failure_count
+         FROM users WHERE id = $1`,
+      [req.user.userId],
+    );
+    const row = rows[0] || {};
+    const hasSubscription = !!row.has_subscription;
+    res.json({
+      hasSubscription,
+      active: hasSubscription ? !!row.active : false,
+      failureCount: parseInt(row.failure_count, 10) || 0,
+      needsResubscribe: hasSubscription && row.active === false,
+    });
+  } catch (err) {
+    next(err);
   }
 }
 
-module.exports = { subscribe, unsubscribe, sendPushToUser };
+/**
+ * GET /api/admin/notifications/dead-letter
+ * Admin-only: inspect undeliverable notifications.
+ */
+async function getDeadLetterNotifications(req, res, next) {
+  try {
+    const items = await webpush.getDeadLetter();
+    res.json(items);
+  } catch (err) {
+    next(err);
+  }
+}
+
+module.exports = { subscribe, unsubscribe, sendPushToUser, getDeadLetterNotifications, getSubscriptionHealth };

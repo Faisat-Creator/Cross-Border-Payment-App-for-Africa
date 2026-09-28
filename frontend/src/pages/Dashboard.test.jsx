@@ -95,6 +95,21 @@ describe('Dashboard', () => {
     expect(document.querySelector('.animate-spin')).toBeInTheDocument();
   });
 
+  test('shows transaction skeleton rows during the initial fetch', () => {
+    api.get.mockReturnValue(new Promise(() => {}));
+    renderDashboard();
+    expect(screen.getByTestId('transactions-skeleton')).toBeInTheDocument();
+  });
+
+  test('replaces transaction skeletons with a retryable error state on fetch failure', async () => {
+    api.get.mockRejectedValue(new Error('history unavailable'));
+
+    renderDashboard();
+
+    expect(await screen.findByText('Could not load recent activity.')).toBeInTheDocument();
+    expect(screen.queryByTestId('transactions-skeleton')).not.toBeInTheDocument();
+  });
+
   test('displays XLM balance after loading', async () => {
     api.get
       .mockResolvedValueOnce(walletResponse)
@@ -122,6 +137,18 @@ describe('Dashboard', () => {
         screen.getByText('No transactions yet. Send your first payment!')
       ).toBeInTheDocument()
     );
+  });
+
+  test('shows retryable wallet error state when wallet data cannot be loaded', async () => {
+    api.get.mockRejectedValue(new Error('wallet unavailable'));
+
+    renderDashboard();
+
+    expect(
+      await screen.findByText('Could not load wallet data. Check your connection and try again.')
+    ).toBeInTheDocument();
+    expect(screen.getByRole('button', { name: /Retry/i })).toBeInTheDocument();
+    expect(screen.queryByRole('button', { name: /Copy wallet address/i })).not.toBeInTheDocument();
   });
 
   test('renders recent transactions list', async () => {
@@ -254,4 +281,46 @@ describe('Dashboard', () => {
       expect(balanceLabel).toBeInTheDocument();
     }
   );
+});
+
+// Issue #642 — Skeleton loading state tests
+describe('Dashboard skeleton loading states', () => {
+  beforeEach(() => {
+    // Delay resolution so we can assert skeleton state
+    api.get.mockImplementation(
+      () => new Promise(() => {}) // never resolves — tests skeleton snapshot
+    );
+  });
+
+  it('renders BalanceCardSkeleton while loading', () => {
+    renderDashboard();
+    // The skeleton container for the balance card uses the Skeleton component
+    const skeletons = document.querySelectorAll('.skeleton');
+    expect(skeletons.length).toBeGreaterThan(0);
+  });
+
+  it('renders 3 TransactionRowSkeleton placeholders while loading', () => {
+    renderDashboard();
+    // TransactionRowSkeleton renders 3 .skeleton elements per row (icon, label, amount)
+    // We verify the aria-busy container is present
+    expect(document.querySelector('[aria-busy="true"]')).toBeInTheDocument();
+  });
+});
+
+// Issue #642 — Skeleton loading state tests
+describe('Dashboard skeleton loading states', () => {
+  beforeEach(() => {
+    api.get.mockImplementation(() => new Promise(() => {}));
+  });
+
+  it('renders skeleton placeholders while loading', () => {
+    renderDashboard();
+    const skeletons = document.querySelectorAll('.skeleton');
+    expect(skeletons.length).toBeGreaterThan(0);
+  });
+
+  it('renders aria-busy transaction skeleton container while loading', () => {
+    renderDashboard();
+    expect(document.querySelector('[aria-busy="true"]')).toBeInTheDocument();
+  });
 });

@@ -1,4 +1,4 @@
-import React, { useEffect, useState, useCallback } from 'react';
+import React, { useEffect, useState, useCallback, useRef } from 'react';
 import { useNavigate } from 'react-router-dom';
 import {
   Send,
@@ -17,9 +17,11 @@ import {
   EyeOff,
   Clock,
   Mail,
+  Bell,
+  X,
 } from 'lucide-react';
-import { Send, Download, RefreshCw, Copy, CheckCheck, FlaskConical, Plus, Minus, WifiOff, Wallet, ChevronDown, PiggyBank, Eye, EyeOff, Clock, Bell, X } from 'lucide-react';
 import { useAuth } from '../context/AuthContext';
+import { useCurrency } from '../context/CurrencyContext';
 import { BalanceCardSkeleton, TransactionRowSkeleton } from '../components/Skeleton';
 import api from '../utils/api';
 import { truncateAddress } from '../utils/currency';
@@ -49,6 +51,12 @@ function BalanceDisplay({ balance }) {
   );
 }
 
+function normalizeWalletsResponse(data) {
+  if (Array.isArray(data?.wallets)) return data.wallets;
+  if (data?.public_key) return [data];
+  return [];
+}
+
 export default function Dashboard() {
   const { user, updateUser } = useAuth();
   const navigate = useNavigate();
@@ -61,6 +69,16 @@ export default function Dashboard() {
       setShowPINSetup(true);
     }
   }, [user]);
+
+  // Issue #996: guard against setState after unmount from timers/promises
+  // started in event handlers (not owned by a useEffect cleanup).
+  const mountedRef = useRef(true);
+  useEffect(() => {
+    mountedRef.current = true;
+    return () => {
+      mountedRef.current = false;
+    };
+  }, []);
 
   // Issue #455: Push notification opt-in banner
   const { supported: pushSupported, subscribed: pushSubscribed, loading: pushLoading, subscribe: pushSubscribe } = usePushNotifications();
@@ -106,18 +124,21 @@ export default function Dashboard() {
   const wallet = wallets.find((w) => w.id === activeWalletId) || wallets[0] || null;
 
   const [transactions, setTransactions] = useState([]);
+  const [txError, setTxError] = useState(false);
   const [scheduledPayments, setScheduledPayments] = useState([]);
   const [scheduledLoading, setScheduledLoading] = useState(true);
   const [loading, setLoading] = useState(true);
   const [refreshing, setRefreshing] = useState(false);
   const [copied, setCopied] = useState(false);
-  const [selectedCurrency, setSelectedCurrency] = useState('XLM');
+  const { displayCurrency: selectedCurrency, setDisplayCurrency: setSelectedCurrency } = useCurrency();
   const [funding, setFunding] = useState(false);
   const [anchorLoading, setAnchorLoading] = useState(false);
   const [anchorAction, setAnchorAction] = useState(null);
   const [balanceIncreased, setBalanceIncreased] = useState(false);
   const [fromCache, setFromCache] = useState(false);
   const [showZeroBalances, setShowZeroBalances] = useState(false);
+  const [walletError, setWalletError] = useState(false);
+  const [transactionsError, setTransactionsError] = useState(false);
   const [queueCount, setQueueCount] = useState(0);
   const { currencies, convertFromXLM, usingApproximateRates } = useExchangeRates();
   const { isOnline } = useOnlineStatus();
@@ -131,13 +152,16 @@ export default function Dashboard() {
       if (payment.to === wallet?.public_key) {
         toast.success(`Received ${payment.amount} ${payment.asset}`);
         setBalanceIncreased(true);
-        setTimeout(() => setBalanceIncreased(false), 2000);
+        setTimeout(() => {
+          if (mountedRef.current) setBalanceIncreased(false);
+        }, 2000);
         Promise.all([
           api.get('/wallet/list'),
           api.get('/payments/history'),
           api.get('/scheduled-payments').catch(() => ({ data: { payments: [] } })),
         ])
           .then(([walletsRes, txRes, scheduledRes]) => {
+            if (!mountedRef.current) return;
             setWallets(walletsRes.data.wallets);
             setTransactions(txRes.data.transactions.slice(0, 5));
             setScheduledPayments(
@@ -174,6 +198,7 @@ export default function Dashboard() {
           setWallets(cachedWallets.data);
           setActiveWalletId((id) => id || cachedWallets.data[0]?.id || null);
           setFromCache(true);
+          setWalletError(false);
         }
         if (cachedHistory?.data) {
           setTransactions(cachedHistory.data.slice(0, 5));
@@ -193,17 +218,22 @@ export default function Dashboard() {
         api.get('/payments/history'),
         api.get('/scheduled-payments').catch(() => ({ data: { payments: [] } })),
       ]);
-      const walletsData = walletsRes.data.wallets;
+      const walletsData = normalizeWalletsResponse(walletsRes.data);
       const txData = txRes.data.transactions;
 
       setWallets(walletsData);
       setActiveWalletId((id) => id || walletsData[0]?.id || null);
       setTransactions(txData.slice(0, 5));
+      setTxError(false);
       setScheduledPayments((scheduledRes.data.payments || []).filter((p) => p.active).slice(0, 3));
       setScheduledLoading(false);
       setFromCache(false);
+      setWalletError(walletsData.length === 0);
+      setTransactionsError(false);
 
-      await Promise.all([setCacheEntry('wallets', walletsData), setCacheEntry('history', txData)]);
+      await Promise.all([setCacheEntry('wallets', walletsData), setCacheEntry('history', txData)]).catch(
+        () => {}
+      );
     } catch {
       try {
         const [cachedWallets, cachedHistory] = await Promise.all([
@@ -214,17 +244,32 @@ export default function Dashboard() {
           setWallets(cachedWallets.data);
           setActiveWalletId((id) => id || cachedWallets.data[0]?.id || null);
           setFromCache(true);
+          setWalletError(false);
         }
         if (cachedHistory?.data) {
           setTransactions(cachedHistory.data.slice(0, 5));
+          setTxError(false);
+        } else {
+          setTxError(true);
+          setTransactionsError(true);
         }
-        if (!cachedWallets?.data) toast.error('Failed to load wallet data');
+        if (!cachedWallets?.data) {
+          setWallets([]);
+          setActiveWalletId(null);
+          setWalletError(true);
+          toast.error('Failed to load wallet data');
+        }
       } catch {
+        setWallets([]);
+        setActiveWalletId(null);
+        setWalletError(true);
+        setTransactionsError(true);
         toast.error('Failed to load wallet data');
       }
     } finally {
       setLoading(false);
       setRefreshing(false);
+      setScheduledLoading(false);
     }
   }, []);
 
@@ -237,10 +282,17 @@ export default function Dashboard() {
     }
   }, [loadDashboard, isOnline]);
 
-  const copyAddress = () => {
-    navigator.clipboard.writeText(wallet?.public_key || '');
-    setCopied(true);
-    setTimeout(() => setCopied(false), 2000);
+  const copyAddress = async () => {
+    if (!wallet?.public_key) return;
+    try {
+      await navigator.clipboard.writeText(wallet.public_key);
+      setCopied(true);
+      setTimeout(() => {
+        if (mountedRef.current) setCopied(false);
+      }, 2000);
+    } catch {
+      toast.error('Failed to copy address');
+    }
   };
 
   const fundWallet = async () => {
@@ -249,7 +301,9 @@ export default function Dashboard() {
       const res = await api.post('/dev/fund-wallet');
       toast.success(res.data.message);
       const walletsRes = await api.get('/wallet/list');
-      setWallets(walletsRes.data.wallets);
+      const walletsData = normalizeWalletsResponse(walletsRes.data);
+      setWallets(walletsData);
+      setWalletError(walletsData.length === 0);
     } catch (err) {
       toast.error(err.response?.data?.error || 'Funding failed');
     } finally {
@@ -313,6 +367,7 @@ export default function Dashboard() {
     selectedCurrency === 'XLM'
       ? selectedAssetBalance
       : convertFromXLM(xlmBalance, selectedCurrency);
+  const walletUnavailable = !loading && walletError && !wallet;
 
   const {
     pullDistance,
@@ -443,6 +498,9 @@ export default function Dashboard() {
           >
             <X size={16} />
           </button>
+        </div>
+      )}
+
       {/* Offline Queue Indicator */}
       {!isOnline && queueCount > 0 && (
         <div className="flex items-center justify-between bg-primary-500/10 border border-primary-500/30 rounded-xl px-4 py-3">
@@ -501,7 +559,28 @@ export default function Dashboard() {
         </div>
       </div>
 
+      {walletUnavailable && (
+        <div
+          role="alert"
+          className="bg-red-500/10 border border-red-500/30 rounded-xl px-4 py-4 text-red-300"
+        >
+          <p className="text-sm font-medium">
+            Could not load wallet data. Check your connection and try again.
+          </p>
+          <button
+            type="button"
+            onClick={() => loadDashboard(true)}
+            disabled={refreshing}
+            className="mt-3 inline-flex items-center gap-2 rounded-lg bg-red-500/20 px-3 py-2 text-sm font-semibold text-red-100 hover:bg-red-500/30 disabled:opacity-50"
+          >
+            <RefreshCw size={14} className={refreshing ? 'animate-spin' : ''} />
+            Retry
+          </button>
+        </div>
+      )}
+
       {/* Wallet Selector */}
+      {!walletUnavailable && (
       <div className="relative">
         <button
           onClick={() => setShowWalletDropdown((v) => !v)}
@@ -611,11 +690,12 @@ export default function Dashboard() {
           </div>
         )}
       </div>
+      )}
 
       {/* Balance Card */}
       {loading ? (
         <BalanceCardSkeleton />
-      ) : (
+      ) : walletUnavailable ? null : (
         <div
           className={`bg-gradient-to-br from-primary-600 to-primary-700 rounded-2xl p-5 shadow-lg shadow-primary-500/20 transition-all duration-500 ${
             balanceIncreased ? 'ring-4 ring-green-400 ring-opacity-50' : ''
@@ -647,7 +727,7 @@ export default function Dashboard() {
             <div className="mb-3 space-y-1">
               {visibleBalances.map((b) => {
                 const assetMeta = currencies.find((c) => c.code === b.asset);
-                const flag = assetMeta?.flag ?? '🪙';
+                const flag = assetMeta?.flag ?? 'XLM';
                 const isSelected = b.asset === selectedCurrency;
                 return (
                   <button
@@ -682,13 +762,15 @@ export default function Dashboard() {
           )}
 
           {/* Fiat currency selector */}
-          <div className="flex gap-2 flex-wrap mb-3">
+          <div className="flex gap-2 flex-wrap mb-3" role="group" aria-label="Display currency">
             {currencies
               .filter((c) => c.code !== 'XLM')
               .map((c) => (
                 <button
                   key={c.code}
                   onClick={() => setSelectedCurrency(c.code)}
+                  aria-label={`Display in ${c.name}`}
+                  aria-pressed={selectedCurrency === c.code}
                   className={`text-xs px-2.5 py-1 rounded-full transition-colors ${
                     selectedCurrency === c.code
                       ? 'bg-white text-primary-700 font-semibold'
@@ -710,46 +792,17 @@ export default function Dashboard() {
             <span className="text-primary-200 text-xs font-mono flex-1 truncate">
               {truncateAddress(wallet?.public_key, 10)}
             </span>
-            <button
-              onClick={copyAddress}
-              className="text-primary-200 hover:text-white shrink-0"
-              aria-label={copied ? 'Address copied' : 'Copy wallet address'}
-        {/* Fiat currency selector */}
-        <div className="flex gap-2 flex-wrap mb-3">
-          {currencies.map((c) => (
-            <button
-              key={c.code}
-              onClick={() => setSelectedCurrency(c.code)}
-              className={`text-xs px-2.5 py-1 rounded-full transition-colors ${selectedCurrency === c.code
-                  ? 'bg-white text-primary-700 font-semibold'
-                  : 'bg-primary-500/40 text-primary-100 hover:bg-primary-500/60'
-                }`}
-              title={`View balance in ${c.name}`}
-            >
-              {copied ? <CheckCheck size={14} /> : <Copy size={14} />}
-            </button>
+            {wallet?.public_key && (
+              <button
+                onClick={copyAddress}
+                className="text-primary-200 hover:text-white shrink-0 transition-colors"
+                aria-label={copied ? 'Address copied to clipboard' : 'Copy wallet address'}
+                title={copied ? 'Copied!' : 'Copy address'}
+              >
+                {copied ? <CheckCheck size={14} className="text-green-400" /> : <Copy size={14} />}
+              </button>
+            )}
           </div>
-          ))}
-        </div>
-        {usingApproximateRates && (
-          <p className="text-primary-200/90 text-xs mb-3 leading-snug">
-            {t('common.rates_disclaimer')}
-          </p>
-        )}
-
-        {/* Wallet address */}
-        <div className="flex items-center gap-2 bg-primary-800/40 rounded-lg px-3 py-2">
-          <span className="text-primary-200 text-xs font-mono flex-1 truncate">
-            {truncateAddress(wallet?.public_key, 10)}
-          </span>
-          <button
-            onClick={copyAddress}
-            className="text-primary-200 hover:text-white shrink-0 transition-colors"
-            aria-label={copied ? 'Address copied to clipboard' : 'Copy wallet address'}
-            title={copied ? 'Copied!' : 'Copy address'}
-          >
-            {copied ? <CheckCheck size={14} className="text-green-400" /> : <Copy size={14} />}
-          </button>
         </div>
       )}
 
@@ -952,9 +1005,56 @@ export default function Dashboard() {
           </button>
         </div>
 
-        {transactions.length === 0 ? (
-          <div className="bg-white dark:bg-gray-900 border border-gray-100 dark:border-gray-800 rounded-xl p-6 text-center text-gray-500 text-sm shadow-sm">
-            {t('dashboard.no_transactions')}
+        {loading && transactions.length === 0 ? (
+          <div className="space-y-2" data-testid="transactions-skeleton" aria-hidden="true">
+            {[0, 1, 2].map((i) => (
+              <TransactionRowSkeleton key={i} />
+            ))}
+          </div>
+        ) : (txError || transactionsError) && transactions.length === 0 ? (
+          <div
+            role="alert"
+            className="bg-red-500/10 border border-red-500/30 rounded-xl px-4 py-4 text-red-300 shadow-sm"
+          >
+            <p className="text-sm font-medium">Could not load recent activity.</p>
+            <button
+              type="button"
+              onClick={() => loadDashboard(true)}
+              disabled={refreshing}
+              className="mt-3 inline-flex items-center gap-2 rounded-lg bg-red-500/20 px-3 py-2 text-sm font-semibold text-red-100 hover:bg-red-500/30 disabled:opacity-50"
+            >
+              <RefreshCw size={14} className={refreshing ? 'animate-spin' : ''} />
+              Retry
+            </button>
+          </div>
+        ) : transactions.length === 0 ? (
+          <div className="bg-white dark:bg-gray-900 border border-gray-100 dark:border-gray-800 rounded-xl p-8 text-center shadow-sm">
+            <div className="w-16 h-16 bg-primary-500/10 rounded-full flex items-center justify-center mx-auto mb-4">
+              <Send size={28} className="text-primary-500" />
+            </div>
+            <h3 className="text-lg font-bold text-gray-900 dark:text-white mb-2">
+              No transactions yet
+            </h3>
+            <p className="text-gray-500 text-sm mb-6 max-w-xs mx-auto">
+              Send your first payment or add funds to get started with AfriPay.
+            </p>
+            <div className="flex gap-3 justify-center">
+              <button
+                onClick={() => navigate(`/send${activeWalletId ? `?wallet_id=${activeWalletId}` : ''}`)}
+                className="bg-primary-500 hover:bg-primary-600 text-white font-semibold py-2.5 px-5 rounded-xl text-sm transition-colors flex items-center gap-2"
+              >
+                <Send size={16} />
+                Send Money
+              </button>
+              <button
+                onClick={() => handleAnchorAction('deposit')}
+                disabled={anchorLoading}
+                className="bg-gray-100 dark:bg-gray-800 hover:bg-gray-200 dark:hover:bg-gray-700 text-gray-900 dark:text-white font-semibold py-2.5 px-5 rounded-xl text-sm transition-colors flex items-center gap-2 border border-gray-200 dark:border-gray-700"
+              >
+                <Plus size={16} />
+                Add Funds
+              </button>
+            </div>
           </div>
         ) : (
           <div className="space-y-2">

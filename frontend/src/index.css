@@ -36,6 +36,12 @@ body {
   animation: shimmer 1.4s ease-in-out infinite;
 }
 
+@media (prefers-reduced-motion: reduce) {
+  .skeleton {
+    animation: none;
+  }
+}
+
 .dark .skeleton {
   background: linear-gradient(
     90deg,
@@ -44,6 +50,13 @@ body {
     theme('colors.gray.800') 75%
   );
   background-size: 800px 100%;
+}
+
+/* Respect users who prefer reduced motion */
+@media (prefers-reduced-motion: reduce) {
+  .skeleton {
+    animation: none;
+  }
 }
 
 /* Custom scrollbar */
