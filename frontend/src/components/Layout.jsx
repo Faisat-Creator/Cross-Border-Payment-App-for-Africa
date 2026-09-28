@@ -1,6 +1,6 @@
 import React from 'react';
 import { Outlet, NavLink, useNavigate, useLocation, useMatch } from 'react-router-dom';
-import { LayoutDashboard, Send, Download, Clock, Upload, User, LogOut, Sun, Moon, Bell, BellOff, AlertTriangle, ArrowUpDown, PiggyBank, Lock } from 'lucide-react';
+import { LayoutDashboard, Send, Download, Clock, Upload, User, LogOut, Sun, Moon, Bell, BellOff, AlertTriangle, ArrowUpDown, PiggyBank, Lock, Shield } from 'lucide-react';
 import { useAuth } from '../context/AuthContext';
 import { useTheme } from '../context/ThemeContext';
 import { usePushNotifications } from '../hooks/usePushNotifications';
@@ -65,6 +65,10 @@ export default function Layout() {
   const { isDegraded, status } = useStellarStatus();
 
   const handleLogout = () => { logout(); navigate('/'); };
+
+  const items = user?.role === 'admin'
+    ? [...navItems, { to: '/admin', icon: Shield, label: 'Admin' }]
+    : navItems;
 
   return (
     <div className="min-h-screen bg-gray-50 dark:bg-gray-950 flex flex-col transition-colors duration-200">
@@ -132,7 +136,7 @@ export default function Layout() {
 
       {/* Bottom nav (mobile-first) */}
       <nav className="fixed bottom-0 left-0 right-0 bg-white dark:bg-gray-900 border-t border-gray-200 dark:border-gray-800 flex justify-around py-2 z-50 transition-colors duration-200">
-        {navItems.map((item) => (
+        {items.map((item) => (
           <NavItem key={item.to} {...item} user={user} />
         ))}
       </nav>
