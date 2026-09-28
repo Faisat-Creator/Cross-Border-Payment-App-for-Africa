@@ -11,7 +11,7 @@ const PRICE_CHANGE_TOAST_THRESHOLD = 0.005; // 0.5%
 const SLIPPAGE_PRESETS = [0.1, 0.5, 1.0];
 const DEFAULT_SLIPPAGE = 0.5;
 const MAX_SLIPPAGE = 5;
-const SLIPPAGE_STORAGE_KEY = 'afripay_swap_slippage';
+const SLIPPAGE_STORAGE_KEY = 'afripay_slippage'; // shared with SendMoney
 
 function normalizeSlippage(value) {
   const parsed = Number.parseFloat(value);
