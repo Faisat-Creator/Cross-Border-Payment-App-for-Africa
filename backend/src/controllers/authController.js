@@ -21,6 +21,7 @@ const {
 } = require('../utils/tokens');
 const { setCsrfCookie } = require('../middleware/csrf');
 const cache = require('../utils/cache');
+const { encryptSecret, decryptSecret } = require('../utils/symmetricEncryption');
 const {
   getRpConfig,
   generateRegistrationOptions,
@@ -726,6 +727,44 @@ async function disableBiometric(req, res, next) {
   }
 }
 
+// BE-137: a token rotated within this window (e.g. two tabs refreshing at
+// once) returns the already-issued successor instead of counting as reuse.
+const REFRESH_GRACE_MS = 20_000;
+
+async function revokeFamilyForReuse(res, record) {
+  await db.query(
+    `UPDATE refresh_tokens SET revoked = TRUE, revoked_at = COALESCE(revoked_at, NOW()), replaced_by_enc = NULL
+     WHERE family_id = $1`,
+    [record.family_id]
+  );
+  logger.warn('refresh_token_reuse detected — family revoked', {
+    event: 'refresh_token_reuse',
+    family_id: record.family_id,
+    user_id: record.user_id,
+  });
+  res.clearCookie(COOKIE_NAME, { ...COOKIE_OPTIONS, maxAge: undefined });
+  return res.status(401).json({ error: 'Refresh token reuse detected. Please log in again.' });
+}
+
+function issueRefreshResponse(res, record, rawToken) {
+  const token = signAccessToken({
+    userId: record.user_id,
+    email: record.email,
+    role: record.role,
+  });
+  res.cookie(COOKIE_NAME, rawToken, COOKIE_OPTIONS);
+  setCsrfCookie(res, record.family_id);
+  return res.json({ token });
+}
+
+function withinGrace(record) {
+  return (
+    record.revoked_at &&
+    record.replaced_by_enc &&
+    Date.now() - new Date(record.revoked_at).getTime() <= REFRESH_GRACE_MS
+  );
+}
+
 async function refresh(req, res, next) {
   try {
     const raw = req.cookies?.[COOKIE_NAME];
@@ -733,7 +772,7 @@ async function refresh(req, res, next) {
 
     const hash = crypto.createHash('sha256').update(raw).digest('hex');
 
-    // Fast-path: check Redis blacklist before hitting the database
+    // Fast-path: check Redis blacklist (set on logout) before hitting the database
     const blacklisted = await cache.get(`blacklist:rt:${hash}`);
     if (blacklisted) {
       logger.warn('refresh_token_blacklisted — Redis fast-reject', { event: 'refresh_token_blacklisted' });
@@ -741,61 +780,21 @@ async function refresh(req, res, next) {
       return res.status(401).json({ error: 'Refresh token has been revoked. Please log in again.' });
     }
 
-    // Look up the token — active (not revoked) and not expired
-    const result = await db.query(
+    const lookup = () => db.query(
       `SELECT rt.id, rt.user_id, rt.expires_at, rt.family_id, rt.revoked,
-              u.email, u.role
+              rt.revoked_at, rt.replaced_by_enc, u.email, u.role
        FROM refresh_tokens rt
        JOIN users u ON u.id = rt.user_id
        WHERE rt.token_hash = $1`,
       [hash]
     );
 
-    const record = result.rows[0];
-
-    if (!record) {
-      // Token hash unknown — could be a completely invalid token (ignore)
-      // or a previously-rotated token being replayed (reuse attack).
-      // Check if this hash belongs to a revoked token in any known family.
-      const revokedResult = await db.query(
-        `SELECT rt.family_id, rt.user_id
-         FROM refresh_tokens rt
-         WHERE rt.token_hash = $1 AND rt.revoked = TRUE`,
-        [hash]
-      );
-
-      if (revokedResult.rows.length > 0) {
-        // Reuse detected — invalidate the entire family and force re-login
-        const { family_id, user_id } = revokedResult.rows[0];
-        await db.query(
-          'DELETE FROM refresh_tokens WHERE family_id = $1',
-          [family_id]
-        );
-        logger.warn('refresh_token_reuse detected — family invalidated', {
-          event: 'refresh_token_reuse',
-          family_id,
-          user_id,
-        });
-        res.clearCookie(COOKIE_NAME, { ...COOKIE_OPTIONS, maxAge: undefined });
-        return res.status(401).json({ error: 'Refresh token reuse detected. Please log in again.' });
-      }
-
-      return res.status(401).json({ error: 'Invalid refresh token' });
-    }
+    const record = (await lookup()).rows[0];
+    if (!record) return res.status(401).json({ error: 'Invalid refresh token' });
 
     if (record.revoked) {
-      // Active lookup returned a revoked row — same family attack, nuke family
-      await db.query(
-        'DELETE FROM refresh_tokens WHERE family_id = $1',
-        [record.family_id]
-      );
-      logger.warn('refresh_token_reuse detected — family invalidated', {
-        event: 'refresh_token_reuse',
-        family_id: record.family_id,
-        user_id: record.user_id,
-      });
-      res.clearCookie(COOKIE_NAME, { ...COOKIE_OPTIONS, maxAge: undefined });
-      return res.status(401).json({ error: 'Refresh token reuse detected. Please log in again.' });
+      if (withinGrace(record)) return issueRefreshResponse(res, record, decryptSecret(record.replaced_by_enc));
+      return revokeFamilyForReuse(res, record);
     }
 
     if (new Date(record.expires_at) < new Date()) {
@@ -805,35 +804,30 @@ async function refresh(req, res, next) {
       return res.status(401).json({ error: 'Refresh token expired' });
     }
 
-    // Valid — rotate: mark old token revoked (kept for reuse detection), issue new one
+    // Valid — rotate. Insert the successor first, then atomically claim the
+    // old token; if a concurrent request won the race, hand back its successor.
     const { raw: newRaw, hash: newHash } = generateRefreshToken();
-    const expiresAt = refreshTokenExpiresAt();
-
-    await db.query(
-      'UPDATE refresh_tokens SET revoked = TRUE WHERE id = $1',
-      [record.id]
-    );
+    const successorId = uuidv4();
     await db.query(
       `INSERT INTO refresh_tokens (id, user_id, token_hash, expires_at, family_id, revoked)
        VALUES ($1, $2, $3, $4, $5, FALSE)`,
-      [uuidv4(), record.user_id, newHash, expiresAt, record.family_id]
+      [successorId, record.user_id, newHash, refreshTokenExpiresAt(), record.family_id]
+    );
+    const claimed = await db.query(
+      `UPDATE refresh_tokens SET revoked = TRUE, revoked_at = NOW(), replaced_by_enc = $2
+       WHERE id = $1 AND revoked = FALSE
+       RETURNING id`,
+      [record.id, encryptSecret(newRaw)]
     );
 
-    // Blacklist old token in Redis (TTL = remaining valid time before it would have expired)
-    const oldTtlSeconds = Math.max(0, Math.floor((new Date(record.expires_at) - Date.now()) / 1000));
-    if (oldTtlSeconds > 0) {
-      await cache.set(`blacklist:rt:${hash}`, '1', oldTtlSeconds);
+    if (!claimed.rows.length) {
+      await db.query('DELETE FROM refresh_tokens WHERE id = $1', [successorId]);
+      const winner = (await lookup()).rows[0];
+      if (winner && withinGrace(winner)) return issueRefreshResponse(res, winner, decryptSecret(winner.replaced_by_enc));
+      return revokeFamilyForReuse(res, record);
     }
 
-    const token = signAccessToken({
-      userId: record.user_id,
-      email: record.email,
-      role: record.role,
-    });
-
-    res.cookie(COOKIE_NAME, newRaw, COOKIE_OPTIONS);
-    setCsrfCookie(res, record.family_id);
-    res.json({ token });
+    return issueRefreshResponse(res, record, newRaw);
   } catch (err) {
     next(err);
   }

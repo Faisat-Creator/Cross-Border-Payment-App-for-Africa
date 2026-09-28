@@ -175,8 +175,7 @@ api.interceptors.response.use(
     isRefreshing = true;
 
     try {
-      const { data } = await refreshClient.post('/auth/refresh', {});
-      const newToken = data.token;
+      const newToken = await refreshSession();
       // Store new token in memory only — never in localStorage
       tokenStore.set(newToken);
       processQueue(null, newToken);
@@ -192,5 +191,21 @@ api.interceptors.response.use(
     }
   }
 );
+
+/**
+ * Refresh the session, serialised across tabs with the Web Locks API so two
+ * tabs never present the same refresh cookie at once (BE-137). The second
+ * tab waits and then refreshes with the already-rotated cookie.
+ */
+export async function refreshSession() {
+  const doRefresh = async () => {
+    const { data } = await refreshClient.post('/auth/refresh', {});
+    return data.token;
+  };
+  if (typeof navigator !== 'undefined' && navigator.locks?.request) {
+    return navigator.locks.request('afripay-auth-refresh', doRefresh);
+  }
+  return doRefresh();
+}
 
 export default api;

@@ -1,6 +1,6 @@
 const db = require('../db');
 const webpush = require('../services/webpush');
-const { startStreamForUser, stopStreamForUser } = require('../services/horizonWorker');
+const ledgerListener = require('../services/ledgerListener');
 const { persistAndBroadcast } = require('../services/notificationInbox');
 const logger = require('../utils/logger');
 
@@ -37,7 +37,7 @@ async function subscribe(req, res, next) {
       [req.user.userId],
     );
     if (walletResult.rows[0]) {
-      startStreamForUser(req.user.userId, walletResult.rows[0].public_key);
+      ledgerListener.addPushTarget(req.user.userId, walletResult.rows[0].public_key);
     }
 
     res.json({ message: 'Push subscription saved' });
@@ -57,7 +57,7 @@ async function unsubscribe(req, res, next) {
       [req.user.userId],
     );
     if (walletResult.rows[0]) {
-      stopStreamForUser(walletResult.rows[0].public_key);
+      ledgerListener.removePushTarget(walletResult.rows[0].public_key);
     }
 
     await db.query(
