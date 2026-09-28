@@ -5,7 +5,6 @@ import {
   ArrowLeft,
   Send,
   ChevronDown,
-  Users,
   Camera,
   Code,
   ArrowRightLeft,
@@ -16,6 +15,7 @@ import {
 } from 'lucide-react';
 import api from '../utils/api';
 import { useConfirm } from '../context/ConfirmContext';
+import { validateStellarAddress } from '../utils/validation';
 import { useExchangeRates } from '../hooks/useExchangeRates';
 import toast from 'react-hot-toast';
 import { useTranslation } from 'react-i18next';
@@ -26,9 +26,15 @@ import XDRInspectorModal from '../components/XDRInspectorModal';
 import LedgerSignModal from '../components/LedgerSignModal';
 import PushNotificationPrompt from '../components/PushNotificationPrompt';
 import { usePushNotifications } from '../hooks/usePushNotifications';
+import { usePaymentStream, CONNECTION_STATE } from '../hooks/usePaymentStream';
 
 const SLIPPAGE_OPTIONS = [0.5, 1, 2];
 const DEFAULT_SLIPPAGE = 1;
+
+// Issue #998: quote freshness window. If the user pauses on the Review/Confirm
+// steps longer than this, the quote (path rate / network fee) is re-fetched
+// automatically so they never confirm a stale rate.
+const QUOTE_FRESHNESS_MS = 30000;
 
 const getSavedSlippage = () => {
   const v = parseFloat(localStorage.getItem('afripay_slippage'));
@@ -88,6 +94,11 @@ export default function SendMoney() {
   const [feeEstimateError, setFeeEstimateError] = useState(false);
   const [contractSimData, setContractSimData] = useState(null);
   const [contractSimLoading, setContractSimLoading] = useState(false);
+  // Issue #998: timestamp of the last successful quote (path/fee) fetch, plus
+  // flags for the auto re-quote indicator on the Review/Confirm screens.
+  const [quoteFetchedAt, setQuoteFetchedAt] = useState(null);
+  const [quoteRefreshed, setQuoteRefreshed] = useState(false);
+  const [quoteRefreshing, setQuoteRefreshing] = useState(false);
   const [requestId] = useState(searchParams.get('request'));
   const [keyboardOpen, setKeyboardOpen] = useState(false);
   const [showPushPrompt, setShowPushPrompt] = useState(false);
@@ -135,9 +146,8 @@ export default function SendMoney() {
 
   const isCrossAsset = usePathPayment && form.destination_asset && form.destination_asset !== form.asset;
 
-  /** Returns true for a valid Ed25519 public key or a federation address */
-  const isValidStellarAddress = (addr) =>
-    (addr.startsWith('G') && addr.length === 56) || addr.includes('*');
+  /** True for a checksum-valid Ed25519 key or a well-formed federation address. */
+  const isValidStellarAddress = (addr) => validateStellarAddress(addr) === null;
 
   // Initial/clean state used for reset and dirty-check
   const cleanForm = {
@@ -177,6 +187,11 @@ export default function SendMoney() {
   const [showWalletDropdown, setShowWalletDropdown] = useState(false);
 
   const selectedWallet = wallets.find((w) => w.id === selectedWalletId) || wallets[0] || null;
+
+  // Stream real-time payment status updates for the active wallet.
+  // Surfacing connectionState lets step 4 show a reconnecting indicator so the
+  // user isn't looking at a silently-stale status view.
+  const { connectionState } = usePaymentStream(selectedWallet?.public_key ?? null, () => {});
 
   // Available XLM balance for the selected wallet (after minimum reserve)
   const selectedWalletXlmEntry = selectedWallet?.balances?.find((b) => b.asset === 'XLM');
@@ -419,6 +434,7 @@ export default function SendMoney() {
           { signal: controller.signal }
         );
         setPathResult(res.data);
+        setQuoteFetchedAt(Date.now());
       } else {
         // Strict send: user specifies source amount, we find destination amount
         const res = await api.post(
@@ -432,6 +448,7 @@ export default function SendMoney() {
           { signal: controller.signal }
         );
         setPathResult(res.data);
+        setQuoteFetchedAt(Date.now());
       }
     } catch (err) {
       // Ignore abort errors — they are intentional cancellations
@@ -462,6 +479,40 @@ export default function SendMoney() {
       pathAbortRef.current?.abort();
     };
   }, [findPath]);
+
+  // Issue #998: re-fetch the current quote (network fee + path rate) and flag
+  // the change so the UI can tell the user the numbers were refreshed.
+  const refreshQuote = useCallback(async () => {
+    setQuoteRefreshing(true);
+    try {
+      if (isCrossAsset && form.amount && form.recipient_address) {
+        await findPath();
+      }
+      try {
+        const r = await api.get('/payments/estimate-fee');
+        setFeeXLM(r.data.fee_xlm);
+      } catch {
+        // Keep the previous fee if the estimate call fails — never block confirm.
+      }
+    } finally {
+      setQuoteFetchedAt(Date.now());
+      setQuoteRefreshing(false);
+      setQuoteRefreshed(true);
+    }
+  }, [findPath, isCrossAsset, form.amount, form.recipient_address]);
+
+  // Issue #998: while the user sits on the Review/Confirm screens, watch for a
+  // stale quote and re-quote automatically instead of confirming the original.
+  useEffect(() => {
+    if (step < 3 || !quoteFetchedAt) return undefined;
+    const check = () => {
+      if (Date.now() - quoteFetchedAt > QUOTE_FRESHNESS_MS) {
+        refreshQuote();
+      }
+    };
+    const timer = setInterval(check, 5000);
+    return () => clearInterval(timer);
+  }, [step, quoteFetchedAt, refreshQuote]);
 
   const checkMemoRequired = useCallback(async (address) => {
     if (!address || address.length < 56) {
@@ -519,6 +570,7 @@ export default function SendMoney() {
   // Fetch fee estimate and contract simulation, then advance to Review step
   const handleAdvanceToReview = async () => {
     setStepLoading(true);
+    setQuoteRefreshed(false);
     try {
       const r = await api.get('/payments/estimate-fee');
       setFeeXLM(r.data.fee_xlm);
@@ -556,6 +608,7 @@ export default function SendMoney() {
     }
 
     setStepLoading(false);
+    setQuoteFetchedAt(Date.now());
     dispatchStep({ type: 'NEXT' });
   };
 
@@ -702,13 +755,19 @@ export default function SendMoney() {
       }
 
       toast.success(t('send.success'));
+      // Issue #999: UX-only first-payment counter used solely to gate the
+      // push-notification pre-prompt (cosmetic). SECURITY WARNING: this
+      // localStorage counter is trivially resettable (clear storage, different
+      // browser/device) and must NEVER be used for transaction-velocity,
+      // fraud, or any security/limit decision — those live entirely server-side
+      // (backend/src/services/fraudDetection.js).
       const count = parseInt(localStorage.getItem('afripay_payment_count') || '0', 10) + 1;
       localStorage.setItem('afripay_payment_count', count.toString());
       if (count === 1 && shouldShowPrompt()) setShowPushPrompt(true);
       const recipientAddr = form.recipient_address;
       const isKnown = contacts.some((c) => c.wallet_address === recipientAddr);
       resetForm();
-      if (!isKnown && recipientAddr.startsWith('G') && recipientAddr.length === 56) {
+      if (!isKnown && isValidStellarAddress(recipientAddr)) {
         setShowSaveContactPrompt(recipientAddr);
         setSaveContactName('');
       } else {
@@ -813,6 +872,16 @@ export default function SendMoney() {
         className="space-y-4 overflow-y-auto"
         style={{ maxHeight: keyboardOpen ? 'calc(100vh - 200px)' : 'auto' }}
       >
+        {/* Issue #998: visible notice when the quote was auto-refreshed */}
+        {step >= 3 && (quoteRefreshing || quoteRefreshed) && (
+          <div
+            role="status"
+            className="bg-yellow-400/10 border border-yellow-400/30 text-yellow-300 text-xs rounded-xl px-3 py-2"
+          >
+            {quoteRefreshing ? 'Refreshing quote…' : 'Rate updated — showing the latest quote.'}
+          </div>
+        )}
+
         {/* ── STEP 1: Recipient ── */}
         {step === 1 && (
           <>
@@ -873,50 +942,6 @@ export default function SendMoney() {
                     </div>
                   )}
                 </div>
-                <ChevronDown
-                  size={14}
-                  className={`text-gray-400 transition-transform ${showWalletDropdown ? 'rotate-180' : ''}`}
-                />
-              </button>
-
-              {showWalletDropdown && (
-                <div
-                  className="absolute z-20 mt-1 w-full bg-gray-800 border border-gray-700 rounded-xl shadow-xl overflow-hidden"
-                  role="listbox"
-                >
-                  {wallets.map((w) => {
-                    const xlm = w.balances?.find((b) => b.asset === 'XLM')?.balance || '0';
-                    return (
-                      <button
-                        key={w.id}
-                        type="button"
-                        role="option"
-                        aria-selected={w.id === selectedWalletId}
-                        onClick={() => {
-                          setSelectedWalletId(w.id);
-                          setShowWalletDropdown(false);
-                        }}
-                        className={`w-full flex items-center justify-between px-4 py-3 text-left transition-colors ${
-                          w.id === selectedWalletId
-                            ? 'bg-primary-500/20 text-primary-400'
-                            : 'hover:bg-gray-700 text-white'
-                        }`}
-                      >
-                        <div>
-                          <p className="text-sm font-medium">{w.label}</p>
-                          <p className="text-xs text-gray-500 font-mono">
-                            {w.public_key.slice(0, 16)}…
-                          </p>
-                        </div>
-                        <p className="text-sm font-semibold">
-                          {parseFloat(xlm).toLocaleString()} XLM
-                        </p>
-                      </button>
-                    );
-                  })}
-                </div>
-              )}
-            </div>
           </div>
         )}
 
@@ -971,7 +996,7 @@ export default function SendMoney() {
           />
           {addressError && (
             <p id="address-error" className="mt-1 text-xs text-red-400">
-              Invalid address. Enter a Stellar public key (G…, 56 chars) or federation address
+              Invalid address. Enter a valid Stellar public key or federation address
               (name*domain).
             </p>
           )}
@@ -1005,32 +1030,6 @@ export default function SendMoney() {
                   aria-label="Search contacts"
                 />
               </div>
-            )}
-
-            {/* Recipient address */}
-            <div>
-              <div className="flex items-center justify-between mb-1">
-                <label className="text-sm text-gray-400">{t('send.recipient_label')}</label>
-                <div className="flex items-center gap-2">
-                  <button
-                    type="button"
-                    onClick={() => setShowScanner(true)}
-                    className="text-primary-500 hover:text-primary-400 p-1.5 rounded-lg hover:bg-primary-500/10 transition-colors"
-                    title={t('send.scan_qr')}
-                    aria-label={t('send.scan_qr')}
-                  >
-                    <Camera size={16} />
-                  </button>
-                  {contacts.length > 0 && (
-                    <button
-                      type="button"
-                      onClick={() => setShowContacts(!showContacts)}
-                      className="text-primary-500 text-xs flex items-center gap-1"
-                    >
-                      <Users size={12} /> {t('send.contacts')}
-                    </button>
-                  )}
-                </div>
               {/* Contact list */}
               <div ref={contactListRef} className="max-h-60 overflow-y-auto">
                 {contacts.length === 0 ? (
@@ -1084,84 +1083,8 @@ export default function SendMoney() {
                   </div>
                 )}
               </div>
-              <input
-                type="text"
-                required
-                placeholder={t('send.recipient_placeholder') || 'Wallet address or username*domain'}
-                value={form.recipient_address}
-                onChange={(e) => {
-                  setForm({ ...form, recipient_address: e.target.value });
-                  setMemoRequired(false);
-                  setAddressError(false);
-                }}
-                onBlur={(e) => {
-                  const val = e.target.value.trim();
-                  if (val && !isValidStellarAddress(val)) setAddressError(true);
-                  checkMemoRequired(val);
-                }}
-                aria-invalid={addressError}
-                aria-describedby={addressError ? 'address-error' : undefined}
-                className={`w-full bg-gray-800 border rounded-xl px-4 py-3 text-white placeholder-gray-500 focus:outline-none transition-colors font-mono text-sm ${
-                  addressError
-                    ? 'border-red-500 focus:border-red-400'
-                    : 'border-gray-700 focus:border-primary-500'
-                }`}
-              />
-              {addressError && (
-                <p id="address-error" className="mt-1 text-xs text-red-400">
-                  Invalid address. Enter a Stellar public key (G…, 56 chars) or federation address (name*domain).
-                </p>
-              )}
-              {!addressError && form.recipient_address && isValidStellarAddress(form.recipient_address) && (
-                <p className="mt-1 flex items-center gap-1 text-xs text-green-400">
-                  <CheckCircle size={12} aria-hidden="true" /> Valid address
-                </p>
-              )}
-              {showContacts && contacts.length > 0 && (
-                <div
-                  ref={contactsDropdownRef}
-                  className="mt-1 bg-gray-800 border border-gray-700 rounded-xl overflow-hidden"
-                  onKeyDown={handleContactKeyDown}
-                >
-                  <div className="p-2 border-b border-gray-700">
-                    <input
-                      ref={contactSearchRef}
-                      type="text"
-                      placeholder="Search contacts..."
-                      value={contactSearch}
-                      onChange={(e) => setContactSearch(e.target.value)}
-                      className="w-full bg-gray-700 border border-gray-600 rounded-lg px-3 py-2 text-white text-sm placeholder-gray-400 focus:outline-none focus:border-primary-500"
-                      aria-label="Search contacts"
-                    />
-                  </div>
-                  <div ref={contactListRef} className="max-h-60 overflow-y-auto">
-                    {filteredContacts.length > 0 ? (
-                      filteredContacts.map((c, index) => (
-                        <button
-                          key={c.id}
-                          type="button"
-                          onClick={() => {
-                            setForm({ ...form, recipient_address: c.wallet_address, memo: c.default_memo || form.memo });
-                            if (c.memo_required) setMemoRequired(true);
-                            setShowContacts(false);
-                            setContactSearch('');
-                          }}
-                          className={`w-full px-4 py-2.5 text-left transition-colors ${
-                            index === selectedContactIndex ? 'bg-primary-500/20 text-primary-400' : 'hover:bg-gray-700'
-                          }`}
-                        >
-                          <p className="text-sm text-white">{c.name}</p>
-                          <p className="text-xs text-gray-500 font-mono">{c.wallet_address.slice(0, 20)}...</p>
-                        </button>
-                      ))
-                    ) : (
-                      <div className="px-4 py-6 text-center text-gray-400">
-                        <p className="text-sm">No contacts match</p>
-                      </div>
-                    )}
-                  </div>
-                </div>
-              )}
+            </div>
+          )}
             </div>
 
             {memoRequired && (
@@ -1590,6 +1513,33 @@ export default function SendMoney() {
         {/* ── STEP 4: Authenticate ── */}
         {step === 4 && (
           <div className="space-y-4">
+            {/* Reconnecting indicator: shown when the payment status stream drops */}
+            {connectionState === CONNECTION_STATE.RECONNECTING && (
+              <div
+                role="status"
+                aria-live="polite"
+                className="flex items-center gap-2 bg-yellow-500/10 border border-yellow-500/40 rounded-xl px-4 py-2.5 text-yellow-400 text-xs"
+              >
+                <span
+                  className="w-2 h-2 rounded-full bg-yellow-400 animate-pulse shrink-0"
+                  aria-hidden="true"
+                />
+                Reconnecting to payment status stream…
+              </div>
+            )}
+            {connectionState === CONNECTION_STATE.DISCONNECTED && (
+              <div
+                role="status"
+                aria-live="polite"
+                className="flex items-center gap-2 bg-red-500/10 border border-red-500/40 rounded-xl px-4 py-2.5 text-red-400 text-xs"
+              >
+                <span
+                  className="w-2 h-2 rounded-full bg-red-400 shrink-0"
+                  aria-hidden="true"
+                />
+                Payment status stream disconnected — status may be delayed
+              </div>
+            )}
             <div className="bg-gray-900 border border-gray-800 rounded-xl p-5 space-y-1">
               <p className="text-white font-semibold">Authorize Payment</p>
               <p className="text-gray-400 text-sm">

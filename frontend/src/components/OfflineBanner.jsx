@@ -17,6 +17,7 @@ import {
   getQueueCount,
   getQueuedPayments,
   removeQueuedPayment,
+  updateQueuedPaymentStatus,
 } from '../utils/offlineDB';
 import api from '../utils/api';
 
@@ -55,7 +56,17 @@ export default function OfflineBanner({ onPaymentSynced }) {
       setSyncing(true);
       for (const item of items) {
         try {
-          await api.post('/payments/send', item.payload);
+          // Mark as syncing so a mid-replay connectivity drop doesn't re-generate
+          // a new idempotency key — the stored key is reused on the next attempt.
+          await updateQueuedPaymentStatus(item.id, 'syncing');
+          await api.post('/payments/send', item.payload, {
+            // Reuse the key that was stamped at queue time.  This is the
+            // critical guarantee: even if connectivity drops mid-replay and
+            // OfflineBanner calls syncQueue again, the backend will see the
+            // same Idempotency-Key and return the cached response instead of
+            // processing a duplicate payment.
+            headers: { 'Idempotency-Key': item.idempotencyKey },
+          });
           await removeQueuedPayment(item.id);
           toast.success(
             `Payment of ${item.payload.amount} ${item.payload.asset || 'XLM'} sent successfully.`,
@@ -63,6 +74,9 @@ export default function OfflineBanner({ onPaymentSynced }) {
           );
           onPaymentSynced?.();
         } catch (err) {
+          // Revert status to 'failed' so the entry is retried on the next
+          // reconnect with the same idempotency key still intact.
+          await updateQueuedPaymentStatus(item.id, 'failed').catch(() => {});
           // Move to failed state — notify persistently
           toast.error(
             `Failed to send queued payment (${item.payload.amount} ${item.payload.asset || 'XLM'}): ${

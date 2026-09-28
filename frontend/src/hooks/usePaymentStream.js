@@ -8,12 +8,32 @@ const BASE_DELAY_MS = 1000;
 const MAX_DELAY_MS = 30_000;
 
 /**
+ * Unified connection state enum.
+ * UI consumers should prefer this over combining the individual boolean flags.
+ *   'connected'    — stream is live and receiving messages
+ *   'reconnecting' — stream dropped, exponential backoff in progress
+ *   'disconnected' — not connected and not attempting to reconnect
+ */
+export const CONNECTION_STATE = {
+  CONNECTED: 'connected',
+  RECONNECTING: 'reconnecting',
+  DISCONNECTED: 'disconnected',
+};
+
+/**
  * Hook to stream real-time payment notifications from Stellar Horizon.
  * Tracks the last seen cursor so reconnections resume from where they left off.
  *
  * @param {string} publicKey - The account public key to monitor
  * @param {Function} onPayment - Callback when a new payment is detected
- * @returns {{ isConnected: boolean, isReconnecting: boolean, error: string|null, reconnect: Function, disconnect: Function }}
+ * @returns {{
+ *   connectionState: 'connected'|'reconnecting'|'disconnected',
+ *   isConnected: boolean,
+ *   isReconnecting: boolean,
+ *   error: string|null,
+ *   reconnect: Function,
+ *   disconnect: Function
+ * }}
  */
 export function usePaymentStream(publicKey, onPayment) {
   const [isConnected, setIsConnected] = useState(false);
@@ -147,7 +167,13 @@ export function usePaymentStream(publicKey, onPayment) {
     };
   }, [publicKey, isConnected, reconnect]);
 
-  return { isConnected, isReconnecting, error, reconnect, disconnect };
+  return { isConnected, isReconnecting, error, reconnect, disconnect,
+    connectionState: isConnected
+      ? CONNECTION_STATE.CONNECTED
+      : isReconnecting
+      ? CONNECTION_STATE.RECONNECTING
+      : CONNECTION_STATE.DISCONNECTED,
+  };
 }
 
 export default usePaymentStream;

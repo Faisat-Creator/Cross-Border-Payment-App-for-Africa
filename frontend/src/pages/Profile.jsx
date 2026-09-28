@@ -54,19 +54,28 @@ export default function Profile() {
   // Avatar upload state
   const fileInputRef = useRef(null);
   const [cropFile, setCropFile] = useState(null); // File selected for cropping
+  // Issue #1000: immediate inline error when the selected file fails the
+  // client-side size/type checks — no network round-trip needed.
+  const [avatarError, setAvatarError] = useState('');
 
   const handleAvatarClick = () => fileInputRef.current?.click();
   const handleFileChange = (e) => {
     const file = e.target.files?.[0];
     if (!file) return;
+    // Client-side limits mirror the backend upload middleware
+    // (backend/src/routes/auth.js avatarUpload: 5 MB, image/(jpeg|png|webp))
+    // so invalid files fail fast before any bytes are uploaded.
     if (file.size > 5 * 1024 * 1024) {
+      setAvatarError('File too large. Maximum size is 5 MB.');
       toast.error('File too large. Maximum size is 5 MB.');
       return;
     }
-    if (!/^image\/(jpeg|jpg|png|webp)$/.test(file.type)) {
+    if (!/^image\/(jpeg|png|webp)$/.test(file.type)) {
+      setAvatarError('Only JPEG, PNG, and WebP files are accepted.');
       toast.error('Only JPEG, PNG, and WebP files are accepted.');
       return;
     }
+    setAvatarError('');
     setCropFile(file);
     // Reset input so same file can be selected again
     e.target.value = '';
@@ -412,9 +421,15 @@ export default function Profile() {
     navigate('/');
   };
 
-  const changeLanguage = (code) => {
+  const changeLanguage = async (code) => {
     i18n.changeLanguage(code);
     localStorage.setItem('afripay_lang', code);
+    try {
+      await api.patch('/auth/me', { preferred_language: code });
+    } catch {
+      // Non-critical: local preference is already applied; backend sync failure
+      // is silently ignored to avoid disrupting the language-switch UX.
+    }
   };
 
   const addContact = async (e) => {
@@ -552,6 +567,12 @@ export default function Profile() {
             <p className="text-gray-400 text-sm">{t('profile.member')}</p>
           </div>
         </div>
+
+        {avatarError && (
+          <p role="alert" className="text-xs text-red-400">
+            {avatarError}
+          </p>
+        )}
 
         <div className="space-y-3 pt-2 border-t border-gray-800">
           <div className="flex items-center gap-3 text-sm">

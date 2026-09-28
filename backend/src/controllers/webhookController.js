@@ -1,9 +1,9 @@
 const crypto = require('crypto');
 const db = require('../db');
-const { validatePublicUrl } = require('../utils/ssrf');
 const { validatePublicUrl } = require('../utils/ssrfValidator');
 const { validateOutboundUrl } = require('../utils/ssrf');
 const { encryptSecret, decryptSecret } = require('../utils/symmetricEncryption');
+const { retryDelivery } = require('../services/webhook');
 
 const VALID_EVENTS = ['payment.sent', 'payment.received', 'payment.failed'];
 
@@ -136,7 +136,7 @@ async function rotateSecret(req, res, next) {
     );
 
     // Return the plain secret once — it will not be shown again
-    res.json({ ...updated[0], secret: newPlainSecret });
+    res.json({ ...updated[0], secret: newPlainSecret, rotation_overlap_hours: ROTATION_OVERLAP_HOURS });
   } catch (err) {
     next(err);
   }
@@ -162,7 +162,6 @@ async function retry(req, res, next) {
   }
 }
 
-module.exports = { create, list, listDeliveries, retry, rotateSecret };
 async function update(req, res, next) {
   try {
     const { id } = req.params;
@@ -206,4 +205,4 @@ async function update(req, res, next) {
   }
 }
 
-module.exports = { create, update, list, listDeliveries, retry };
+module.exports = { create, update, list, listDeliveries, retry, rotateSecret };

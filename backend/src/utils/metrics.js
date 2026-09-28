@@ -40,6 +40,9 @@ const anchorPollDuration = new client.Histogram({
   help: 'Anchor transaction-status poll duration in seconds, per anchor',
   labelNames: ['anchor', 'success'],
   buckets: [0.05, 0.1, 0.3, 0.5, 1, 2, 5, 10],
+  registers: [registry],
+});
+
 const paymentsTotal = new client.Counter({
   name: 'afripay_payments_total',
   help: 'Total payment state changes',
@@ -140,6 +143,9 @@ const geoDenialsTotal = new client.Counter({
   name: 'afripay_geo_denials_total',
   help: 'Total requests denied by geo-restriction, labelled by country and route',
   labelNames: ['country', 'route'],
+  registers: [registry],
+});
+
 const txQueueDepth = new client.Gauge({
   name: 'afripay_tx_queue_depth',
   help: 'Number of per-wallet transaction submission queues currently holding a pending/in-flight task (txQueue.js)',
@@ -155,6 +161,9 @@ const txQueueBackpressure = new client.Gauge({
 const txQueuePendingTasksTotal = new client.Gauge({
   name: 'afripay_tx_queue_pending_tasks_total',
   help: 'Total pending/in-flight tasks across all per-wallet transaction submission queues (txQueue.js)',
+  registers: [registry],
+});
+
 const sep31CallbackSkippedTotal = new client.Counter({
   name: 'afripay_sep31_callback_skipped_total',
   help: 'Total SEP-31 callbacks skipped instead of being delivered, labelled by reason',

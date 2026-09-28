@@ -1,5 +1,5 @@
 import React, { useState, useRef, useEffect } from 'react';
-import { useNavigate, Link, useSearchParams } from 'react-router-dom';
+import { useNavigate, Link, useSearchParams, useLocation } from 'react-router-dom';
 import { useAuth } from '../context/AuthContext';
 import toast from 'react-hot-toast';
 import { Eye, EyeOff, ArrowLeft, ShieldCheck, MailCheck } from 'lucide-react';
@@ -10,6 +10,9 @@ export default function Login() {
   const { login, updateUser } = useAuth();
   const navigate = useNavigate();
   const location = useLocation();
+  // Set by the Register page after a successful signup — shows the
+  // "please verify your email" banner (see emailVerificationRequired below).
+  const emailVerificationRequired = location.state?.emailVerificationRequired;
   const { t } = useTranslation();
   const [searchParams] = useSearchParams();
   const [form, setForm] = useState({ email: '', password: '' });
@@ -75,6 +78,12 @@ export default function Login() {
       const redirectParam = searchParams.get('redirect');
       const redirect = redirectParam || sessionStorage.getItem('afripay_redirect');
       sessionStorage.removeItem('afripay_redirect');
+      // Onboarding completion is per-account — users who haven't completed it
+      // are routed through the Welcome screen before reaching the app.
+      if (result.user?.onboarding_completed === false) {
+        navigate('/');
+        return;
+      }
       navigate(redirect || '/dashboard');
     } catch (err) {
       const data = err.response?.data;

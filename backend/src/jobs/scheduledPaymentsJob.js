@@ -1,3 +1,21 @@
+/**
+ * BE-025: This is the ACTIVE scheduled-payments job — registered by
+ * backend/src/scheduler.js (the one wired into startScheduler() from
+ * index.js) on CRON_SCHEDULED_PAYMENTS.
+ *
+ * Two other modules previously duplicated this responsibility with
+ * near-identical names and were never wired into anything:
+ *   - backend/src/jobs/scheduledPayments.js       (oldest schema: next_run_at/active)
+ *   - backend/src/services/scheduledPaymentsJob.js (own setInterval loop, scheduled_at schema)
+ * Both were dead code and have been removed. This is the only implementation.
+ *
+ * Double-execution safety:
+ *   1. A distributed lock (utils/distributedLock.withLock) ensures only one
+ *      process instance runs doProcess() at a time across all app instances.
+ *   2. Within a single run, claimDuePayments() uses
+ *      `FOR UPDATE SKIP LOCKED` so concurrent DB transactions can't claim
+ *      the same row.
+ */
 const db = require('../db');
 const { sendPayment } = require('../services/stellar');
 const logger = require('../utils/logger');

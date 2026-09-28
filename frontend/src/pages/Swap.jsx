@@ -10,11 +10,19 @@ const PRICE_CHANGE_TOAST_THRESHOLD = 0.005; // 0.5%
 
 const SLIPPAGE_PRESETS = [0.1, 0.5, 1.0];
 const DEFAULT_SLIPPAGE = 0.5;
+const MAX_SLIPPAGE = 5;
 const SLIPPAGE_STORAGE_KEY = 'afripay_swap_slippage';
 
+function normalizeSlippage(value) {
+  const parsed = Number.parseFloat(value);
+  if (!Number.isFinite(parsed) || parsed <= 0) return DEFAULT_SLIPPAGE;
+  return Math.min(MAX_SLIPPAGE, Math.max(parsed, 0.01));
+}
+
 function getSavedSlippage() {
-  const v = parseFloat(localStorage.getItem(SLIPPAGE_STORAGE_KEY));
-  return isNaN(v) || v <= 0 ? DEFAULT_SLIPPAGE : v;
+  const raw = Number.parseFloat(localStorage.getItem(SLIPPAGE_STORAGE_KEY));
+  if (!Number.isFinite(raw)) return DEFAULT_SLIPPAGE;
+  return normalizeSlippage(raw);
 }
 
 export default function Swap() {
@@ -37,11 +45,9 @@ export default function Swap() {
     : null;
 
   const applySlippage = (value) => {
-    const v = parseFloat(value);
-    if (!isNaN(v) && v > 0 && v <= 50) {
-      setSlippage(v);
-      localStorage.setItem(SLIPPAGE_STORAGE_KEY, String(v));
-    }
+    const nextValue = normalizeSlippage(value);
+    setSlippage(nextValue);
+    localStorage.setItem(SLIPPAGE_STORAGE_KEY, String(nextValue));
   };
 
   // Close slippage popover on outside click
@@ -236,22 +242,23 @@ export default function Swap() {
                   <input
                     type="number"
                     min="0.01"
-                    max="50"
+                    max={MAX_SLIPPAGE}
                     step="0.1"
                     placeholder="0.5"
                     value={customSlippage}
                     onChange={(e) => {
-                      setCustomSlippage(e.target.value);
-                      if (e.target.value) applySlippage(e.target.value);
+                      const next = e.target.value;
+                      setCustomSlippage(next);
+                      if (next !== '') applySlippage(next);
                     }}
                     className="flex-1 bg-gray-100 dark:bg-gray-700 rounded-lg px-2 py-1.5 text-sm text-gray-900 dark:text-white focus:outline-none focus:ring-1 focus:ring-primary-500"
                   />
                   <span className="text-sm text-gray-500">%</span>
                 </div>
               </div>
-              {slippage > 5 && (
+              {slippage >= MAX_SLIPPAGE && (
                 <p className="text-xs text-yellow-500">
-                  {t('swap.high_slippage_warning')}
+                  Maximum safe slippage is {MAX_SLIPPAGE}%. Use a lower value when possible.
                 </p>
               )}
             </div>
