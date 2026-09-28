@@ -33,6 +33,7 @@ import {
 import { useAuth, tokenStore } from '../context/AuthContext';
 import { truncateAddress } from '../utils/currency';
 import api from '../utils/api';
+import { useConfirm } from '../context/ConfirmContext';
 import AvatarCrop from '../components/AvatarCrop';
 
 const LANGUAGES = [
@@ -44,6 +45,7 @@ const LANGUAGES = [
 ];
 
 export default function Profile() {
+  const confirm = useConfirm();
   const { user, logout, updateUser } = useAuth();
   const navigate = useNavigate();
   const { t, i18n } = useTranslation();
@@ -291,7 +293,7 @@ export default function Profile() {
   };
 
   const handleClearInflation = async () => {
-    if (!window.confirm('Clear the inflation destination from your account?')) return;
+    if (!(await confirm(t('confirm.clear_inflation', 'Clear the inflation destination from your account?'), { title: t('confirm.clear_inflation_title', 'Clear inflation destination'), confirmLabel: t('confirm.clear', 'Clear') }))) return;
     setClearingInflation(true);
     try {
       await api.post('/wallet/clear-inflation-destination');
@@ -305,7 +307,7 @@ export default function Profile() {
   };
 
   const handleRemoveSigner = async (signerKey) => {
-    if (!window.confirm(`Remove signer ${signerKey.slice(0, 8)}…?`)) return;
+    if (!(await confirm(t('confirm.remove_signer', 'Remove signer {{key}}…? It will no longer be able to sign for this account.', { key: signerKey.slice(0, 8) }), { title: t('confirm.remove_signer_title', 'Remove signer'), confirmLabel: t('confirm.remove', 'Remove') }))) return;
     setRemovingSignerKey(signerKey);
     try {
       await api.delete(`/wallet/signers/${signerKey}`);
@@ -393,7 +395,7 @@ export default function Profile() {
   };
 
   const handleRemoveTrustline = async (asset) => {
-    if (!window.confirm(`Remove ${asset} trustline? Your ${asset} balance must be zero.`)) return;
+    if (!(await confirm(t('confirm.remove_trustline', 'Remove {{asset}} trustline? Your {{asset}} balance must be zero.', { asset }), { title: t('confirm.remove_trustline_title', 'Remove trustline'), confirmLabel: t('confirm.remove', 'Remove') }))) return;
     try {
       await api.delete(`/wallet/trustline/${asset}`);
       setTrustlines((prev) => prev.filter((t) => t.asset !== asset));
@@ -505,9 +507,10 @@ export default function Profile() {
       return;
     }
     if (
-      !window.confirm(
-        'FINAL WARNING: This will permanently close your Stellar account and transfer all XLM to the destination. This cannot be undone. Continue?'
-      )
+      !(await confirm(
+        t('confirm.close_account', 'This will permanently close your Stellar account and transfer all XLM to the destination. This cannot be undone.'),
+        { title: t('confirm.close_account_title', 'Final warning'), confirmLabel: t('confirm.close_account_btn', 'Close account') }
+      ))
     )
       return;
     setCloseLoading(true);

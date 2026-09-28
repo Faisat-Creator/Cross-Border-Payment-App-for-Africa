@@ -53,6 +53,14 @@ const { runHealthChecks, runDeepHealthChecks } = require('./services/health');
 
 const app = express();
 
+// Trust the configured number of proxy hops (e.g. TRUST_PROXY=1 behind a single load balancer)
+// so req.ip reflects the real client address for the admin IP allow-list and rate limiting.
+if (process.env.TRUST_PROXY) {
+  const tp = process.env.TRUST_PROXY;
+  app.set('trust proxy', /^\d+$/.test(tp) ? parseInt(tp, 10) : tp === 'true' ? true : tp);
+}
+
+app.use(Sentry.Handlers.requestHandler());
 // Serve uploaded avatars
 const path = require('path');
 app.use('/uploads/avatars', express.static(path.join(__dirname, '../uploads/avatars')));

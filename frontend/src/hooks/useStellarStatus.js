@@ -142,7 +142,7 @@ export function useStellarStatus() {
         clearInterval(intervalRef.current);
       }
     };
-  }, []); // eslint-disable-line react-hooks/exhaustive-deps
+  }, []); // eslint-disable-line react-hooks/exhaustive-deps -- start polling once on mount; the fetcher reads refs
 
   return { status, loading, error, isDegraded, isStale, refetch: () => checkStatus(true) };
 }

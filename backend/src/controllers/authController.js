@@ -6,6 +6,8 @@ const { createWallet, encryptPrivateKey, addTrustline } = require('../services/s
 const audit = require('../services/audit');
 const logger = require('../utils/logger');
 const { hashPIN, comparePIN, validatePIN } = require('../services/pin');
+const { sendVerificationEmail, sendPasswordResetEmail } = require('../services/email');
+const { generateSecret, verifyToken, generateBackupCodes, useBackupCode } = require('../services/twofa');
 const { sendVerificationEmail, sendPasswordResetEmail, sendBackupCodeWarningEmail, sendEmailChangeRequestedNotice } = require('../services/email');
 const { generateSecret, verifyToken, generateBackupCodes, useBackupCode, hashBackupCode, verifyBackupCode } = require('../services/twofa');
 const {
@@ -195,7 +197,8 @@ async function login(req, res, next) {
     const result = await db.query(
       `SELECT u.id, u.full_name, u.email, u.password_hash, u.email_verified, u.role,
               u.totp_enabled, u.totp_secret, u.failed_login_attempts, u.locked_until,
-              u.last_failed_attempt_at, u.onboarding_completed, w.public_key
+              u.last_failed_attempt_at, u.onboarding_completed, u.is_suspended, 
+              u.suspension_reason, w.public_key
        FROM users u LEFT JOIN wallets w ON w.user_id = u.id
        WHERE u.email = $1`,
       [email]
@@ -203,6 +206,16 @@ async function login(req, res, next) {
 
     const user = result.rows[0];
     const now = new Date();
+    
+    // Check if account is suspended
+    if (user && user.is_suspended) {
+      return res.status(403).json({
+        error: 'Account suspended',
+        reason: user.suspension_reason || 'Your account has been suspended. Please contact support.',
+        code: 'ACCOUNT_SUSPENDED'
+      });
+    }
+    
     // Lockout configuration — single source of truth for threshold and windows
     const LOCKOUT_DURATION_MINUTES = 15;
     const MAX_FAILED_ATTEMPTS = 5;
@@ -330,6 +343,9 @@ async function login(req, res, next) {
             deviceTrusted = String(payload.userId) === String(user.id);
           } catch { /* expired or invalid — require TOTP */ }
         }
+        if (!deviceTrusted && !totpCode) {
+          return res.status(401).json({ error: 'TOTP code required', code: 'TOTP_REQUIRED', requires_2fa: true });
+        }
         if (!deviceTrusted && !verifyToken(user.totp_secret, totpCode)) {
           return res.status(401).json({ error: 'Invalid TOTP code' });
         }
@@ -412,9 +428,32 @@ async function logout(req, res, next) {
   }
 }
 
+async function resendVerification(req, res, next) {
+  try {
+    const { email } = req.body;
+    res.status(200).json({ message: 'If that account exists and is unverified, a new verification email has been sent.' });
+
+    const found = await db.query('SELECT id FROM users WHERE email = $1 AND email_verified = FALSE', [email]);
+    if (found.rows.length === 0) return;
+
+    const { raw, hashed } = generateVerificationToken();
+    const expiresAt = new Date(Date.now() + TOKEN_TTL_MS);
+    Promise.resolve()
+      .then(() => db.query(
+        'UPDATE users SET verification_token = $1, token_expires_at = $2 WHERE id = $3',
+        [hashed, expiresAt, found.rows[0].id]
+      ))
+      .then(() => sendVerificationEmail(email, raw))
+      .catch((err) => logger.warn('resendVerification background task failed', { error: err.message }));
+  } catch (err) {
+    next(err);
+  }
+}
+
 async function verifyEmail(req, res, next) {
   try {
-    const { token } = req.query;
+    // Prefer POST body; query-string GET is deprecated (tokens in URLs leak via logs/Referer)
+    const token = req.body?.token || req.query.token;
     if (!token) return res.status(400).json({ error: 'Verification token is required' });
 
     const hashed = crypto.createHash('sha256').update(token).digest('hex');
@@ -783,6 +822,7 @@ async function refresh(req, res, next) {
     const lookup = () => db.query(
       `SELECT rt.id, rt.user_id, rt.expires_at, rt.family_id, rt.revoked,
               rt.revoked_at, rt.replaced_by_enc, u.email, u.role
+              u.email, u.role, u.is_suspended, u.suspension_reason
        FROM refresh_tokens rt
        JOIN users u ON u.id = rt.user_id
        WHERE rt.token_hash = $1`,
@@ -795,6 +835,16 @@ async function refresh(req, res, next) {
     if (record.revoked) {
       if (withinGrace(record)) return issueRefreshResponse(res, record, decryptSecret(record.replaced_by_enc));
       return revokeFamilyForReuse(res, record);
+    }
+    
+    // Check if user account is suspended
+    if (record.is_suspended) {
+      res.clearCookie(COOKIE_NAME, { ...COOKIE_OPTIONS, maxAge: undefined });
+      return res.status(403).json({
+        error: 'Account suspended',
+        reason: record.suspension_reason || 'Your account has been suspended. Please contact support.',
+        code: 'ACCOUNT_SUSPENDED'
+      });
     }
 
     if (new Date(record.expires_at) < new Date()) {
@@ -1024,7 +1074,7 @@ async function changeEmail(req, res, next) {
 
 async function verifyEmailChange(req, res, next) {
   try {
-    const { token } = req.query;
+    const token = req.body?.token || req.query.token;
     if (!token) return res.status(400).json({ error: 'Token is required' });
 
     const hashed = crypto.createHash('sha256').update(token).digest('hex');
@@ -1400,6 +1450,7 @@ module.exports = {
   logout,
   revokeDeviceTrust,
   verifyEmail,
+  resendVerification,
   verifyPhone,
   getMe,
   updateProfile,

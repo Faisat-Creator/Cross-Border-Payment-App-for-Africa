@@ -1,3 +1,4 @@
+import React, { useEffect, useState } from 'react';
 import React, { useState, useEffect } from 'react';
 import { useNavigate, useSearchParams, Link } from 'react-router-dom';
 import toast from 'react-hot-toast';
@@ -11,7 +12,14 @@ export default function ResetPassword() {
   const navigate = useNavigate();
   const [searchParams] = useSearchParams();
   const { t } = useTranslation();
-  const tokenFromUrl = searchParams.get('token') || '';
+  // Read the token once, then strip it from the address bar so it doesn't linger in history/Referer
+  const [tokenFromUrl] = useState(() => searchParams.get('token') || '');
+
+  useEffect(() => {
+    if (searchParams.get('token')) {
+      window.history.replaceState(window.history.state, '', window.location.pathname);
+    }
+  }, [searchParams]);
 
   const [password, setPassword] = useState('');
   const [showPass, setShowPass] = useState(false);

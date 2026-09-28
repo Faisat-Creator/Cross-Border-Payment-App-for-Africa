@@ -1,6 +1,6 @@
 import React, { useEffect, useRef, useMemo, useState } from 'react';
 import { useNavigate } from 'react-router-dom';
-import { ArrowLeft, CheckCircle2, Download, FileUp, Loader2, Plus, RotateCcw, Send, Trash2, Upload, XCircle } from 'lucide-react';
+import { ArrowLeft, AlertCircle, CheckCircle, CheckCircle2, Download, FileUp, Loader2, Plus, RotateCcw, Send, Trash2, Upload, XCircle } from 'lucide-react';
 import toast from 'react-hot-toast';
 import api from '../utils/api';
 import { CURRENCIES, truncateAddress } from '../utils/currency';

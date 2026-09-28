@@ -41,6 +41,7 @@ const { Server: SocketIOServer } = require('socket.io');
 const jwt = require('jsonwebtoken');
 const { startScheduler, stopScheduler } = require('./scheduler');
 const { setSocketIO } = require('./services/notificationInbox');
+const { isJtiBlacklisted } = require('./controllers/sessionController');
 
 const PORT = process.env.PORT || 5000;
 const SHUTDOWN_TIMEOUT_MS = 10_000;
@@ -72,11 +73,34 @@ const io = new SocketIOServer(server, {
   cors: { origin: process.env.FRONTEND_URL, credentials: true },
 });
 
-io.use((socket, next) => {
+io.use(async (socket, next) => {
   const token = socket.handshake.auth?.token;
   if (!token) return next(new Error('Authentication required'));
   try {
     const payload = jwt.verify(token, process.env.JWT_SECRET);
+    
+    // Check if JTI is blacklisted (token revoked via session management)
+    if (payload.jti) {
+      const blacklisted = await isJtiBlacklisted(payload.jti);
+      if (blacklisted) {
+        return next(new Error('Token has been revoked'));
+      }
+    }
+    
+    // Check if user account is suspended
+    const { rows } = await db.query(
+      'SELECT is_suspended FROM users WHERE id = $1',
+      [payload.userId]
+    );
+    
+    if (rows.length === 0) {
+      return next(new Error('User not found'));
+    }
+    
+    if (rows[0].is_suspended) {
+      return next(new Error('Account suspended'));
+    }
+    
     socket.userId = payload.userId;
     next();
   } catch {

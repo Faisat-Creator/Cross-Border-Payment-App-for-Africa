@@ -99,7 +99,13 @@ jobs:
         cd frontend
         npm ci
 
-    - name: Lint (frontend)
+    - name: Lint correctness (frontend, required)
+      if: matrix.component == 'frontend'
+      run: |
+        cd frontend
+        npm run lint:build
+
+    - name: Lint style (frontend)
       if: matrix.component == 'frontend'
       # continue-on-error: repo has pre-existing lint debt (~800 violations);
       # this makes new violations visible without blocking merges until that's paid down
