@@ -99,6 +99,30 @@ router.post('/swap',
 
       const { public_key, encrypted_secret_key } = walletResult.rows[0];
 
+      // Issue #1156: Apply compliance checks to DEX swaps (value-moving endpoint)
+      const { ensureKycIfNeeded, amlRescreenForPayment, dailyLimitExceeded, checkFraud, logFraudBlock } = require('../controllers/paymentController');
+      const { estimateUSDValue } = require('../controllers/paymentController');
+      
+      // Use sell_asset for compliance thresholds
+      await ensureKycIfNeeded(req.user.userId, sell_amount, sell_asset);
+      
+      const estimatedUSD = estimateUSDValue(sell_amount, sell_asset);
+      await amlRescreenForPayment(req.user.userId, public_key, estimatedUSD);
+      
+      const overLimit = await dailyLimitExceeded(public_key, sell_amount);
+      if (overLimit) {
+        return res.status(400).json({
+          error: 'Daily send limit reached. Try again tomorrow.',
+          code: 'DAILY_LIMIT_EXCEEDED',
+        });
+      }
+      
+      const fraudCheck = await checkFraud(public_key, sell_amount, sell_asset);
+      if (fraudCheck.blocked) {
+        await logFraudBlock(public_key, fraudCheck.reason, sell_amount, sell_asset);
+        return res.status(429).json({ error: fraudCheck.reason });
+      }
+
       const result = await executeSwap({
         publicKey: public_key,
         encryptedSecretKey: encrypted_secret_key,

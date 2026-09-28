@@ -93,7 +93,12 @@ async function fetchLedgerCloseTime(ledgerSequence) {
 function estimateUSDValue(amount, asset) {
   if (asset === "USD" || asset === "USDC") return parseFloat(amount);
   if (asset === "XLM") return parseFloat(amount) * XLM_USD_RATE;
-  return 0;
+  
+  // For any asset not explicitly supported, use a conservative 1:1 USD estimate
+  // to ensure KYC/AML/phone verification thresholds are enforced (issue #1148).
+  // In production, integrate a live price feed for NGN, GHS, KES, etc.
+  logger.warn('estimateUSDValue: unsupported asset, using 1:1 fallback', { asset, amount });
+  return parseFloat(amount);
 }
 
 async function dailyLimitExceeded(walletAddress, amount, asset) {

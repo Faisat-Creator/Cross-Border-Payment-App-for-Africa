@@ -547,8 +547,18 @@ async function getMe(req, res, next) {
 async function setup2FA(req, res, next) {
   try {
     const userId = req.user.userId;
-    const user = await db.query('SELECT email FROM users WHERE id = $1', [userId]);
+    const user = await db.query('SELECT email, totp_enabled FROM users WHERE id = $1', [userId]);
     if (!user.rows[0]) return res.status(404).json({ error: 'User not found' });
+
+    // Issue #1151: Prevent silently replacing an active 2FA secret.
+    // If the user already has 2FA enabled, they must first disable it
+    // (verify2FADisable) before setting up a new secret.
+    if (user.rows[0].totp_enabled) {
+      return res.status(400).json({
+        error: '2FA is already enabled on this account. Please disable it first if you need to set up a new authenticator.',
+        code: 'TOTP_ALREADY_ENABLED',
+      });
+    }
 
     const { secret, qrCode, otpauthUri } = await generateSecret(user.rows[0].email);
     const backupCodes = generateBackupCodes();

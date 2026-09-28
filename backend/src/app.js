@@ -117,23 +117,23 @@ app.use('/api/admin', rateLimiters.adminLimiter);
 app.use('/api', rateLimiters.readLimiter);
 
 app.use('/api/auth', authRoutes);
-app.use('/api/wallet', walletRoutes);
+app.use('/api/wallet', geoRestriction, walletRoutes);
 app.use('/api/payments', geoRestriction, paymentRoutes);
 app.use('/api/payment-requests', geoRestriction, paymentRequestRoutes);
 app.use('/api/scheduled-payments', geoRestriction, scheduledPaymentRoutes);
 app.use('/api/savings', geoRestriction, savingsRoutes);
-app.use('/api/anchor', anchorRoutes);
+app.use('/api/anchor', geoRestriction, anchorRoutes);
 app.use('/api/analytics', analyticsRoutes);
-app.use('/api/dex', dexRoutes);
+app.use('/api/dex', geoRestriction, dexRoutes);
 app.use('/api/support', supportRoutes);
-app.use('/api/escrow', agentEscrowRoutes);
+app.use('/api/escrow', geoRestriction, agentEscrowRoutes);
 app.use('/api/referrals', referralRoutes);
 app.use('/api/loyalty', loyaltyRoutes);
 app.use('/api/disputes', disputeRoutes);
 app.use('/api/kyc', kycRoutes);
 app.use('/api/admin', ipAllowlist, adminRoutes);
 app.use('/api/prices', pricesRoutes);
-app.use('/api/channels', channelsRoutes);
+app.use('/api/channels', geoRestriction, channelsRoutes);
 app.use('/api/contracts', contractsRoutes);
 app.use('/api/ledger', ledgerRoutes);
 app.use('/api/contacts', contactsRoutes);
@@ -143,7 +143,7 @@ app.use('/api/assets', assetsRoutes);
 app.use('/api/notifications', notificationRoutes);
 app.use('/.well-known/stellar', sep10Routes);
 app.use('/api/sep10', sep10Routes);
-app.use('/api/sep31', sep31Routes);
+app.use('/api/sep31', geoRestriction, sep31Routes);
 // BE-031: /api/dev is reserved exclusively for the env-gated developer router
 // below. A "legacy alias" that also mounted toolsRoutes at /api/dev used to
 // live here (removed) — its naming collision with this router was flagged as

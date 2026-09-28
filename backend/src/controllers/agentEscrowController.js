@@ -117,6 +117,29 @@ async function create(req, res, next) {
     }
     const { public_key, encrypted_secret_key } = walletResult.rows[0];
 
+    // Issue #1156: Apply compliance checks to escrow creation (value-moving endpoint)
+    const { ensureKycIfNeeded, amlRescreenForPayment, dailyLimitExceeded, checkFraud, logFraudBlock } = require("./paymentController");
+    const { estimateUSDValue } = require("./paymentController");
+    
+    await ensureKycIfNeeded(req.user.userId, amount, asset);
+    
+    const estimatedUSD = estimateUSDValue(amount, asset);
+    await amlRescreenForPayment(req.user.userId, public_key, estimatedUSD);
+    
+    const overLimit = await dailyLimitExceeded(public_key, amount);
+    if (overLimit) {
+      return res.status(400).json({
+        error: 'Daily send limit reached. Try again tomorrow.',
+        code: 'DAILY_LIMIT_EXCEEDED',
+      });
+    }
+    
+    const fraudCheck = await checkFraud(public_key, amount, asset);
+    if (fraudCheck.blocked) {
+      await logFraudBlock(public_key, fraudCheck.reason, amount, asset);
+      return res.status(429).json({ error: fraudCheck.reason });
+    }
+
     const { escrowId, txHash } = await createEscrow({
       encryptedSecretKey: encrypted_secret_key,
       recipient: recipient_wallet,
