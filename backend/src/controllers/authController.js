@@ -6,6 +6,8 @@ const { createWallet, encryptPrivateKey, addTrustline } = require('../services/s
 const audit = require('../services/audit');
 const logger = require('../utils/logger');
 const { hashPIN, comparePIN, validatePIN } = require('../services/pin');
+const { sendVerificationEmail, sendPasswordResetEmail } = require('../services/email');
+const { generateSecret, verifyToken, generateBackupCodes, useBackupCode } = require('../services/twofa');
 const { sendVerificationEmail, sendPasswordResetEmail, sendBackupCodeWarningEmail, sendEmailChangeRequestedNotice } = require('../services/email');
 const { generateSecret, verifyToken, generateBackupCodes, useBackupCode, hashBackupCode, verifyBackupCode } = require('../services/twofa');
 const {
@@ -438,7 +440,8 @@ async function resendVerification(req, res, next) {
 
 async function verifyEmail(req, res, next) {
   try {
-    const { token } = req.query;
+    // Prefer POST body; query-string GET is deprecated (tokens in URLs leak via logs/Referer)
+    const token = req.body?.token || req.query.token;
     if (!token) return res.status(400).json({ error: 'Verification token is required' });
 
     const hashed = crypto.createHash('sha256').update(token).digest('hex');
@@ -1055,7 +1058,7 @@ async function changeEmail(req, res, next) {
 
 async function verifyEmailChange(req, res, next) {
   try {
-    const { token } = req.query;
+    const token = req.body?.token || req.query.token;
     if (!token) return res.status(400).json({ error: 'Token is required' });
 
     const hashed = crypto.createHash('sha256').update(token).digest('hex');

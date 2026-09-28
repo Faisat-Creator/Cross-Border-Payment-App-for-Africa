@@ -2,6 +2,8 @@ const router = require('express').Router();
 const { query, body, validationResult } = require('express-validator');
 const authMiddleware = require('../middleware/auth');
 const db = require('../db');
+const idempotency = require('../middleware/idempotency');
+const { getOrderbook, executeSwap, getTradeHistory } = require('../services/dex');
 const cache = require('../utils/cache');
 const { parseAssetParam, getOrderbook, executeSwap, getTradeHistory } = require('../services/dex');
 
@@ -68,6 +70,10 @@ router.get('/orderbook',
 /**
  * POST /api/dex/swap
  * @protected — accesses and signs with the authenticated user's wallet.
+ * Body: sell_asset, sell_amount, buy_asset, plus either
+ *   - min_received (decimal string): binding destMin for the path payment, or
+ *   - slippage_pct (0–50, default 1): used to derive destMin from the server quote.
+ * Supports the Idempotency-Key header.
  */
 router.post('/swap',
   authMiddleware,
@@ -76,11 +82,14 @@ router.post('/swap',
     body('sell_amount').isFloat({ gt: 0 }).withMessage('sell_amount must be > 0'),
     body('buy_asset').matches(ASSET_PARAM_RE).withMessage('Invalid buy_asset'),
     body('slippage_pct').optional().isFloat({ min: 0, max: 50 }).withMessage('slippage_pct must be 0–50'),
+    body('min_received').optional().matches(/^\d+(\.\d{1,7})?$/).withMessage('min_received must be a decimal string with up to 7 decimals')
+      .bail().custom((v) => parseFloat(v) > 0).withMessage('min_received must be > 0'),
   ],
   validate,
+  idempotency,
   async (req, res, next) => {
     try {
-      const { sell_asset, sell_amount, buy_asset, slippage_pct } = req.body;
+      const { sell_asset, sell_amount, buy_asset, slippage_pct, min_received } = req.body;
 
       const walletResult = await db.query(
         'SELECT public_key, encrypted_secret_key FROM wallets WHERE user_id = $1',
@@ -97,6 +106,7 @@ router.post('/swap',
         sellAmount: sell_amount,
         buyAsset: buy_asset,
         slippagePct: slippage_pct,
+        minReceived: min_received,
       });
 
       res.json(result);
