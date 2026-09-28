@@ -132,13 +132,9 @@ class RedisStore {
 }
 
 function getTrustedIp(req) {
-  const trusted = (process.env.TRUSTED_PROXIES || '').split(',').map((s) => s.trim()).filter(Boolean);
-  const forwarded = req.headers['x-forwarded-for'];
-  if (forwarded && trusted.length > 0) {
-    const ips = forwarded.split(',').map((s) => s.trim());
-    return ips[0] || req.ip;
-  }
-  return req.ip;
+  // Express computes req.ip using the configured trust-proxy chain. Never
+  // trust a client-supplied left-most X-Forwarded-For value here.
+  return req.ip || req.socket?.remoteAddress || 'unknown';
 }
 
 function makeKeyByIp(req) {
@@ -277,4 +273,5 @@ module.exports = {
   exportKeyLimiter,
   RedisStore,
   getRateLimiterStatus,
+  getTrustedIp,
 };

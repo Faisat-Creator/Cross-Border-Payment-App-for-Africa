@@ -2,6 +2,7 @@ const router = require("express").Router();
 const { body, param, validationResult } = require("express-validator");
 const StellarSdk = require("@stellar/stellar-sdk");
 const authMiddleware = require("../middleware/auth");
+const { readLimiter } = require("../middleware/rateLimiter");
 const { create, confirm, cancel, getEscrow } = require("../controllers/agentEscrowController");
 
 const validate = (req, res, next) => {
@@ -18,6 +19,7 @@ const isValidAddress = (v) => {
 };
 
 router.use(authMiddleware);
+router.use(readLimiter);
 
 router.post(
   "/create",

@@ -2,6 +2,7 @@ const router = require('express').Router();
 const { body, param, query, validationResult } = require('express-validator');
 const StellarSdk = require('@stellar/stellar-sdk');
 const authMiddleware = require('../middleware/auth');
+const { readLimiter, exportKeyLimiter } = require('../middleware/rateLimiter');
 const {
   getWallet,
   listWallets,
@@ -36,6 +37,7 @@ const validate = (req, res, next) => {
 };
 
 router.use(authMiddleware);
+router.use(readLimiter);
 
 // Multi-wallet endpoints
 router.get('/list', listWallets);
@@ -73,6 +75,7 @@ router.get('/transactions', getWalletTransactions);
 
 router.post(
   '/export-key',
+  exportKeyLimiter,
   [
     body('password').notEmpty().withMessage('Password is required'),
     body('wallet_id').optional().isUUID().withMessage('wallet_id must be a valid UUID'),

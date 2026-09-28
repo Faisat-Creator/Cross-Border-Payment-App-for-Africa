@@ -192,11 +192,16 @@ async function retryDelivery(deliveryId) {
  * @param {object} data  - Arbitrary event-specific payload data
  * @returns {Promise<void>}
  */
-async function deliver(event, data) {
+async function deliver(event, userId, data) {
+  if (!userId) {
+    logger.warn('Skipping webhook delivery without an owning user', { event });
+    return;
+  }
   const { rows } = await db.query(
-    `SELECT id, url, secret, previous_secret, previous_secret_expires_at
-     FROM webhooks WHERE active = true AND $1 = ANY(events)`,
-    [event]
+    `SELECT id, user_id, url, secret, previous_secret, previous_secret_expires_at
+     FROM webhooks
+     WHERE active = true AND user_id = $2 AND $1 = ANY(events)`,
+    [event, userId]
   );
 
   if (!rows.length) return;
