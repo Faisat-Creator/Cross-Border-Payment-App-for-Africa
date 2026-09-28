@@ -1,4 +1,5 @@
 const geoip = require('geoip-lite');
+const { redactUrl } = require('../utils/redactUrl');
 const logger = require('../utils/logger');
 
 /**
@@ -42,7 +43,7 @@ module.exports = function geoRestriction(req, res, next) {
       ip,
       country,
       method: req.method,
-      path: req.originalUrl,
+      path: redactUrl(req.originalUrl),
     });
 
     return res.status(451).json({

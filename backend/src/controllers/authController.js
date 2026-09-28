@@ -6,8 +6,6 @@ const { createWallet, encryptPrivateKey, addTrustline } = require('../services/s
 const audit = require('../services/audit');
 const logger = require('../utils/logger');
 const { hashPIN, comparePIN, validatePIN } = require('../services/pin');
-const { sendVerificationEmail } = require('../services/email');
-const logger = require('../utils/logger');
 const { sendVerificationEmail, sendPasswordResetEmail } = require('../services/email');
 const { generateSecret, verifyToken, generateBackupCodes, useBackupCode } = require('../services/twofa');
 const {
@@ -23,7 +21,6 @@ const TOKEN_TTL_MS = 96 * 60 * 60 * 1000; // 96 hours
 const { sendOTP } = require('../services/sms');
 const { recordSession } = require('./sessionController');
 
-const TOKEN_TTL_MS = 96 * 60 * 60 * 1000;
 const PASSWORD_RESET_TTL_MS = 60 * 60 * 1000;
 const PHONE_OTP_TTL_MS = 10 * 60 * 1000; // 10 minutes
 
@@ -411,7 +408,8 @@ async function logout(req, res, next) {
 
 async function verifyEmail(req, res, next) {
   try {
-    const { token } = req.query;
+    // Prefer POST body; query-string GET is deprecated (tokens in URLs leak via logs/Referer)
+    const token = req.body?.token || req.query.token;
     if (!token) return res.status(400).json({ error: 'Verification token is required' });
 
     const hashed = crypto.createHash('sha256').update(token).digest('hex');
@@ -886,7 +884,7 @@ async function changeEmail(req, res, next) {
 
 async function verifyEmailChange(req, res, next) {
   try {
-    const { token } = req.query;
+    const token = req.body?.token || req.query.token;
     if (!token) return res.status(400).json({ error: 'Token is required' });
 
     const hashed = crypto.createHash('sha256').update(token).digest('hex');
