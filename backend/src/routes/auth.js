@@ -7,6 +7,7 @@ const {
   refresh,
   logout,
   verifyEmail,
+  resendVerification,
   verifyPhone,
   getMe,
   updateProfile,
@@ -108,6 +109,12 @@ router.post('/refresh', verifyCsrf, refresh);
 router.post('/logout', verifyCsrf, logout);
 
 router.get('/verify-email', verifyEmail);
+router.post(
+  '/resend-verification',
+  [body('email').isEmail().normalizeEmail()],
+  validate,
+  resendVerification
+);
 router.post(
   '/verify-phone',
   authMiddleware,

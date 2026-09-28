@@ -14,6 +14,7 @@ import {
   BookUser,
 } from 'lucide-react';
 import api from '../utils/api';
+import { useConfirm } from '../context/ConfirmContext';
 import { validateStellarAddress } from '../utils/validation';
 import { useExchangeRates } from '../hooks/useExchangeRates';
 import toast from 'react-hot-toast';
@@ -53,6 +54,7 @@ function stepReducer(state, action) {
 }
 
 export default function SendMoney() {
+  const confirm = useConfirm();
   const navigate = useNavigate();
   const { t } = useTranslation();
   const [searchParams] = useSearchParams();
@@ -813,12 +815,12 @@ export default function SendMoney() {
     >
       <button
         type="button"
-        onClick={() => {
+        onClick={async () => {
           if (step > 1) {
             dispatchStep({ type: 'BACK' });
             return;
           }
-          if (formIsDirty && !window.confirm('You have unsaved changes. Leave this page?')) return;
+          if (formIsDirty && !(await confirm(t('confirm.leave_unsaved', 'You have unsaved changes. Leave this page?'), { title: t('confirm.leave_title', 'Discard changes?'), confirmLabel: t('confirm.leave', 'Leave') }))) return;
           navigate(-1);
         }}
         className="text-gray-400 hover:text-white mb-6 flex items-center gap-1"

@@ -115,6 +115,15 @@ api.interceptors.request.use(async (config) => {
   return config;
 });
 
+// Instead of a hard navigation (which loses the current URL, e.g. reset-password
+// tokens), signal AuthContext to drop the session. PrivateRoute then redirects
+// protected pages to /login while remembering where the user was.
+export const SESSION_EXPIRED_EVENT = 'afripay:session-expired';
+function notifySessionExpired() {
+  tokenStore.clear();
+  window.dispatchEvent(new Event(SESSION_EXPIRED_EVENT));
+}
+
 api.interceptors.response.use(
   (res) => res,
   async (err) => {
@@ -150,11 +159,9 @@ api.interceptors.response.use(
         const silent401 =
           url.includes('/auth/login') ||
           url.includes('/auth/register') ||
-          url.includes('/auth/verify-pin');
-        if (!silent401) {
-          tokenStore.clear();
-          window.location.href = '/login';
-        }
+          url.includes('/auth/verify-pin') ||
+          url.includes('/auth/refresh');
+        if (!silent401) notifySessionExpired();
       }
       return Promise.reject(err);
     }
@@ -184,8 +191,7 @@ api.interceptors.response.use(
       return api.request(originalRequest);
     } catch (refreshErr) {
       processQueue(refreshErr, null);
-      tokenStore.clear();
-      window.location.href = '/login';
+      notifySessionExpired();
       return Promise.reject(refreshErr);
     } finally {
       isRefreshing = false;

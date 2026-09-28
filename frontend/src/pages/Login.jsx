@@ -32,6 +32,7 @@ export default function Login() {
   // 2FA TOTP step
   const [requires2fa, setRequires2fa] = useState(false);
   const [totp, setTotp] = useState('');
+  const [totpError, setTotpError] = useState('');
   const totpInputRef = useRef(null);
 
   // Backup-code mode (issue #1194) — lets users without their authenticator
@@ -99,7 +100,7 @@ export default function Login() {
       navigate(redirect || '/dashboard');
     } catch (err) {
       const data = err.response?.data;
-      if (err.response?.status === 403 && data?.requires_2fa) {
+      if (data?.code === 'TOTP_REQUIRED' || data?.requires_2fa) {
         // Backend signals that a TOTP code is required — switch to TOTP step
         setRequires2fa(true);
       } else if (err.response?.status === 429) {
@@ -136,6 +137,7 @@ export default function Login() {
     // Only allow digits
     const digits = value.replace(/\D/g, '').slice(0, 6);
     setTotp(digits);
+    setTotpError('');
 
     // Auto-submit on 6th digit
     if (digits.length === 6) {
@@ -148,7 +150,7 @@ export default function Login() {
         );
         await completeTwoFactorLogin(res);
       } catch (err) {
-        toast.error(err.response?.data?.error || t('login.totp_error', 'Invalid code. Try again.'));
+        setTotpError(err.response?.data?.error || t('login.totp_error', 'Invalid code. Try again.'));
         setTotp('');
         totpInputRef.current?.focus();
       } finally {
@@ -221,6 +223,36 @@ export default function Login() {
                 : t('login.totp_subtitle', 'Enter the 6-digit code from your authenticator app.')}
             </p>
 
+            <div>
+              <label className="text-sm text-gray-600 dark:text-gray-400 mb-1 block">
+                {t('login.totp_label', 'Authentication code')}
+              </label>
+              <input
+                ref={totpInputRef}
+                type="text"
+                inputMode="numeric"
+                pattern="\d{6}"
+                maxLength={6}
+                placeholder="000000"
+                value={totp}
+                onChange={(e) => handleTotpChange(e.target.value)}
+                disabled={loading}
+                aria-label={t('login.totp_aria', '6-digit TOTP authentication code')}
+                aria-invalid={!!totpError}
+                aria-describedby={totpError ? 'totp-error' : undefined}
+                className="w-full bg-white dark:bg-gray-800 border border-gray-200 dark:border-gray-700 rounded-xl px-4 py-4 text-gray-900 dark:text-white placeholder-gray-400 dark:placeholder-gray-500 focus:outline-none focus:border-primary-500 transition-colors shadow-sm text-center text-3xl tracking-[0.5em] font-mono"
+              />
+              {totpError && (
+                <p id="totp-error" role="alert" className="text-sm text-red-500 mt-2 text-center">{totpError}</p>
+              )}
+              <p className="text-xs text-gray-500 mt-2 text-center">
+                {t('login.totp_hint', 'The code submits automatically when all 6 digits are entered.')}
+              </p>
+            </div>
+
+            {loading && (
+              <div className="flex justify-center mt-6">
+                <div className="w-6 h-6 border-2 border-primary-500 border-t-transparent rounded-full animate-spin" role="status" aria-label="Verifying" />
             {useBackupCode ? (
               <form onSubmit={handleBackupCodeSubmit}>
                 <label
