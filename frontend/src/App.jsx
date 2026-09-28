@@ -24,6 +24,7 @@ import Webhooks from "./pages/Webhooks";
 import Referrals from "./pages/Referrals";
 import Sessions from "./pages/Sessions";
 import Escrow from "./pages/Escrow";
+import NotFound from "./pages/NotFound";
 import Layout from "./components/Layout";
 import ErrorBoundary from "./components/ErrorBoundary";
 import UpdateBanner from "./components/UpdateBanner";
@@ -32,6 +33,7 @@ import UpdateBanner from "./components/UpdateBanner";
 const Analytics = React.lazy(() => import("./pages/Analytics"));
 const Swap = React.lazy(() => import("./pages/Swap"));
 const BatchPayment = React.lazy(() => import("./pages/BatchPayment"));
+const AdminDashboard = React.lazy(() => import("./pages/AdminDashboard"));
 
 const LoadingFallback = () => (
   <div className="min-h-screen flex items-center justify-center bg-gray-50 dark:bg-gray-950">
@@ -55,6 +57,15 @@ function PrivateRoute({ children }) {
   // Onboarding is a per-account prerequisite — incomplete users must finish it first.
   if (user.onboarding_completed === false) {
     return <Navigate to="/" replace />;
+  }
+  return children;
+}
+
+function AdminRoute({ children }) {
+  const { user, loading } = useAuth();
+  if (loading) return <LoadingFallback />;
+  if (!user || user.role !== "admin") {
+    return <Navigate to="/dashboard" replace />;
   }
   return children;
 }
@@ -148,7 +159,18 @@ function AppRoutes() {
           <Route path="swap" element={<Suspense fallback={<LoadingFallback />}><Swap /></Suspense>} />
           <Route path="referrals" element={<Referrals />} />
           <Route path="escrow" element={<Escrow />} />
+          <Route
+            path="admin"
+            element={
+              <AdminRoute>
+                <Suspense fallback={<LoadingFallback />}>
+                  <AdminDashboard />
+                </Suspense>
+              </AdminRoute>
+            }
+          />
         </Route>
+        <Route path="*" element={<NotFound />} />
       </Routes>
     </ErrorBoundary>
   );
