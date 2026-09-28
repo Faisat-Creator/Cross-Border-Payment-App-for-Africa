@@ -194,7 +194,8 @@ async function login(req, res, next) {
     const result = await db.query(
       `SELECT u.id, u.full_name, u.email, u.password_hash, u.email_verified, u.role,
               u.totp_enabled, u.totp_secret, u.failed_login_attempts, u.locked_until,
-              u.last_failed_attempt_at, u.onboarding_completed, w.public_key
+              u.last_failed_attempt_at, u.onboarding_completed, u.is_suspended, 
+              u.suspension_reason, w.public_key
        FROM users u LEFT JOIN wallets w ON w.user_id = u.id
        WHERE u.email = $1`,
       [email]
@@ -202,6 +203,16 @@ async function login(req, res, next) {
 
     const user = result.rows[0];
     const now = new Date();
+    
+    // Check if account is suspended
+    if (user && user.is_suspended) {
+      return res.status(403).json({
+        error: 'Account suspended',
+        reason: user.suspension_reason || 'Your account has been suspended. Please contact support.',
+        code: 'ACCOUNT_SUSPENDED'
+      });
+    }
+    
     // Lockout configuration — single source of truth for threshold and windows
     const LOCKOUT_DURATION_MINUTES = 15;
     const MAX_FAILED_ATTEMPTS = 5;
@@ -744,7 +755,7 @@ async function refresh(req, res, next) {
     // Look up the token — active (not revoked) and not expired
     const result = await db.query(
       `SELECT rt.id, rt.user_id, rt.expires_at, rt.family_id, rt.revoked,
-              u.email, u.role
+              u.email, u.role, u.is_suspended, u.suspension_reason
        FROM refresh_tokens rt
        JOIN users u ON u.id = rt.user_id
        WHERE rt.token_hash = $1`,
@@ -796,6 +807,16 @@ async function refresh(req, res, next) {
       });
       res.clearCookie(COOKIE_NAME, { ...COOKIE_OPTIONS, maxAge: undefined });
       return res.status(401).json({ error: 'Refresh token reuse detected. Please log in again.' });
+    }
+    
+    // Check if user account is suspended
+    if (record.is_suspended) {
+      res.clearCookie(COOKIE_NAME, { ...COOKIE_OPTIONS, maxAge: undefined });
+      return res.status(403).json({
+        error: 'Account suspended',
+        reason: record.suspension_reason || 'Your account has been suspended. Please contact support.',
+        code: 'ACCOUNT_SUSPENDED'
+      });
     }
 
     if (new Date(record.expires_at) < new Date()) {
