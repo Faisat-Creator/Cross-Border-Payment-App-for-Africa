@@ -294,10 +294,6 @@ async function login(req, res, next) {
     // Check if 2FA is enabled
     if (user.totp_enabled) {
       const { totp_code: totpCode, backup_code } = req.body;
-      if (!totpCode && !backup_code) {
-        return res.status(403).json({ error: 'TOTP code required', requires_2fa: true });
-      }
-
       if (backup_code) {
         const codes = await db.query(
           `SELECT id, code_hash FROM totp_backup_codes WHERE user_id = $1 AND used_at IS NULL`,
@@ -330,6 +326,9 @@ async function login(req, res, next) {
             const payload = verifyDeviceToken(incomingDeviceToken);
             deviceTrusted = String(payload.userId) === String(user.id);
           } catch { /* expired or invalid — require TOTP */ }
+        }
+        if (!deviceTrusted && !totpCode) {
+          return res.status(401).json({ error: 'TOTP code required', code: 'TOTP_REQUIRED', requires_2fa: true });
         }
         if (!deviceTrusted && !verifyToken(user.totp_secret, totpCode)) {
           return res.status(401).json({ error: 'Invalid TOTP code' });
@@ -407,6 +406,28 @@ async function logout(req, res, next) {
     }
     res.clearCookie(COOKIE_NAME, { ...COOKIE_OPTIONS, maxAge: undefined });
     res.json({ message: 'Logged out successfully' });
+  } catch (err) {
+    next(err);
+  }
+}
+
+async function resendVerification(req, res, next) {
+  try {
+    const { email } = req.body;
+    res.status(200).json({ message: 'If that account exists and is unverified, a new verification email has been sent.' });
+
+    const found = await db.query('SELECT id FROM users WHERE email = $1 AND email_verified = FALSE', [email]);
+    if (found.rows.length === 0) return;
+
+    const { raw, hashed } = generateVerificationToken();
+    const expiresAt = new Date(Date.now() + TOKEN_TTL_MS);
+    Promise.resolve()
+      .then(() => db.query(
+        'UPDATE users SET verification_token = $1, token_expires_at = $2 WHERE id = $3',
+        [hashed, expiresAt, found.rows[0].id]
+      ))
+      .then(() => sendVerificationEmail(email, raw))
+      .catch((err) => logger.warn('resendVerification background task failed', { error: err.message }));
   } catch (err) {
     next(err);
   }
@@ -1382,6 +1403,7 @@ module.exports = {
   logout,
   revokeDeviceTrust,
   verifyEmail,
+  resendVerification,
   verifyPhone,
   getMe,
   updateProfile,

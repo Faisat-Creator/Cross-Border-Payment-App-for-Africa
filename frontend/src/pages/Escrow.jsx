@@ -1,9 +1,13 @@
 import React, { useState, useEffect } from 'react';
 import { useAuth } from '../context/AuthContext';
 import api from '../utils/api';
+import { useConfirm } from '../context/ConfirmContext';
+import { useTranslation } from 'react-i18next';
 import toast from 'react-hot-toast';
 
 export default function Escrow() {
+  const confirm = useConfirm();
+  const { t } = useTranslation();
   const { user } = useAuth();
   const [activeTab, setActiveTab] = useState('create');
   const [escrows, setEscrows] = useState([]);
@@ -102,9 +106,10 @@ export default function Escrow() {
 
   const handleConfirmEscrow = async (escrowId, escrow) => {
     const remaining = remainingBalance(escrow);
-    if (!window.confirm(
-      `Are you sure you want to fully release the remaining ${remaining} ${escrow.asset}? This action cannot be undone.`
-    )) return;
+    if (!(await confirm(
+      t('confirm.release_escrow', 'Fully release the remaining {{amount}} {{asset}}? This action cannot be undone.', { amount: remaining, asset: escrow.asset }),
+      { title: t('confirm.release_escrow_title', 'Release escrow'), confirmLabel: t('confirm.release', 'Release') }
+    ))) return;
 
     setLoading(true);
     try {
@@ -120,7 +125,7 @@ export default function Escrow() {
   };
 
   const handleCancelEscrow = async (escrowId) => {
-    if (!window.confirm('Are you sure you want to cancel this escrow?')) return;
+    if (!(await confirm(t('confirm.cancel_escrow', 'Cancel this escrow? Locked funds will be returned to the sender.'), { title: t('confirm.cancel_escrow_title', 'Cancel escrow'), confirmLabel: t('confirm.cancel_escrow_btn', 'Cancel escrow') }))) return;
 
     setLoading(true);
     try {

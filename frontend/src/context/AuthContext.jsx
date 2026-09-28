@@ -35,6 +35,14 @@ export function AuthProvider({ children }) {
       .finally(() => setLoading(false));
   }, []);
 
+  // api.js signals an expired session; clearing the user lets PrivateRoute
+  // redirect protected pages while public pages stay put.
+  useEffect(() => {
+    const onExpired = () => setUser(null);
+    window.addEventListener('afripay:session-expired', onExpired);
+    return () => window.removeEventListener('afripay:session-expired', onExpired);
+  }, []);
+
   // Device-trust is carried by an httpOnly cookie the backend sets on login
   // (issue #995) — the browser attaches it automatically via withCredentials,
   // so no token is read from or written to localStorage here.

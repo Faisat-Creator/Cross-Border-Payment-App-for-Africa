@@ -10,6 +10,8 @@ import Login from "./pages/Login";
 import Register from "./pages/Register";
 import ForgotPassword from "./pages/ForgotPassword";
 import ResetPassword from "./pages/ResetPassword";
+import VerifyEmail from "./pages/VerifyEmail";
+import { ConfirmProvider } from "./context/ConfirmContext";
 import Dashboard from "./pages/Dashboard";
 import SendMoney from "./pages/SendMoney";
 import ReceiveMoney from "./pages/ReceiveMoney";
@@ -99,6 +101,8 @@ function AppRoutes() {
             </PublicRoute>
           }
         />
+        <Route path="/verify-email" element={<VerifyEmail />} />
+        <Route path="/verify-email-change" element={<VerifyEmail change />} />
         <Route
           path="/reset-password"
           element={
@@ -193,7 +197,9 @@ export default function App() {
                 "aria-atomic": "true",
               }}
             />
-            <AppRoutes />
+            <ConfirmProvider>
+              <AppRoutes />
+            </ConfirmProvider>
             <UpdateBanner />
           </BrowserRouter>
           </CurrencyProvider>
