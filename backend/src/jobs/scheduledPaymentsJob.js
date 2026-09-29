@@ -9,11 +9,6 @@
  *   - backend/src/services/scheduledPaymentsJob.js (own setInterval loop, scheduled_at schema)
  * Both were dead code and have been removed. This is the only implementation.
  *
- * BE-126: The authoritative columns are `run_at` and `status`. The FE-133
- * list view must read these fields (not the legacy `next_run_at`/`active`).
- * This job also exposes a normalizer for the API response so the frontend
- * can read the next run time from the backend's authoritative field.
- *
  * Double-execution safety:
  *   1. A distributed lock (utils/distributedLock.withLock) ensures only one
  *      process instance runs doProcess() at a time across all app instances.
@@ -29,26 +24,6 @@ const { withLock } = require('../utils/distributedLock');
 const LOCK_KEY = 'lock:scheduled_payments';
 const LOCK_TTL = parseInt(process.env.SCHEDULED_JOB_LOCK_TTL_SECS || '55', 10);
 
-/**
- * Normalize a scheduled-payment row for API consumption.
- *
- * BE-126 made `run_at`/`status` the authoritative columns. The list view
- * expects `next_run_at`/`active`, so we expose both aliases and keep the
- * authoritative fields as the source of truth.
- */
-function normalizeScheduledPayment(row) {
-  if (!row) return row;
-  const nextRunAt = row.run_at || row.next_run_at || null;
-  const status = row.status || (row.active ? 'pending' : 'paused');
-  return {
-    ...row,
-    run_at: nextRunAt,
-    next_run_at: nextRunAt,
-    status,
-    active: status === 'pending',
-  };
-}
-
 // Claim a batch of due payments atomically to avoid double-processing
 async function claimDuePayments() {
   const { rows } = await db.query(
@@ -61,8 +36,7 @@ async function claimDuePayments() {
        LIMIT 50
        FOR UPDATE SKIP LOCKED
      )
-     RETURNING *
-`
+     RETURNING *`
   );
   return rows;
 }
@@ -94,10 +68,26 @@ async function processOne(payment) {
     [payment.sender_wallet, payment.recipient_wallet, payment.amount, payment.asset, payment.memo, transactionHash]
   );
 
-  await db.query(
-    `UPDATE scheduled_payments SET status = 'completed', updated_at = NOW() WHERE id = $1`,
-    [payment.id]
-  );
+  // Advance the schedule for recurring payments instead of marking them
+  // completed after the first execution. This keeps the job in sync with
+  // the `execute_at`/frequency` schema exposed to the frontend.
+  const freq = (payment.frequency || '').toLowerCase();
+  if (freq === 'daily' || freq === 'weekly' || freq === 'monthly') {
+    const interval = freq === 'daily' ? '1 day' : freq === 'weekly' ? '7 days' : '1 month';
+    await db.query(
+      `UPDATE scheduled_payments
+       SET status = 'pending',
+           run_at = run_at + $interval::interval,
+           updated_at = NOW()
+       WHERE id = $1`,
+      [payment.id]
+    );
+  } else {
+    await db.query(
+      `UPDATE scheduled_payments SET status = 'completed', updated_at = NOW() WHERE id = $1`,
+      [payment.id]
+    );
+  }
 
   logger.info('Scheduled payment executed', { id: payment.id, tx_hash: transactionHash, ledger });
 }
@@ -139,4 +129,4 @@ async function processScheduledPayments() {
   }
 }
 
-module.exports = { processScheduledPayments, normalizeScheduledPayment };
+module.exports = { processScheduledPayments };

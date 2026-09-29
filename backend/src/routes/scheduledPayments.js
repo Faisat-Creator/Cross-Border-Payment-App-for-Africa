@@ -12,6 +12,7 @@ const validate = (req, res, next) => {
   next();
 };
 
+const ONE_MINUTE_MS = 60 * 1000;
 const ONE_YEAR_MS = 365 * 24 * 60 * 60 * 1000;
 
 /**
@@ -43,7 +44,7 @@ const ONE_YEAR_MS = 365 * 24 * 60 * 60 * 1000;
  *               execute_at:
  *                 type: string
  *                 format: date-time
- *                 description: Must be a future timestamp within 1 year
+ *                 description: Must be at least 1 minute in the future and within 1 year
  *               memo:
  *                 type: string
  *     responses:
@@ -76,7 +77,7 @@ router.post(
       .custom((value) => {
         const executeAt = new Date(value);
         const now = Date.now();
-        if (executeAt.getTime() <= now) {
+        if (executeAt.getTime() < now + ONE_MINUTE_MS) {
           throw new Error('execute_at must be a future timestamp');
         }
         if (executeAt.getTime() > now + ONE_YEAR_MS) {
@@ -105,6 +106,20 @@ router.put(
       .custom((value) => {
         if (!StellarSdk.StrKey.isValidEd25519PublicKey(value)) {
           throw new Error('Invalid Stellar wallet address');
+        }
+        return true;
+      }),
+    body('execute_at')
+      .optional()
+      .isISO8601().withMessage('execute_at must be a valid ISO 8601 timestamp')
+      .custom((value) => {
+        const executeAt = new Date(value);
+        const now = Date.now();
+        if (executeAt.getTime() < now + ONE_MINUTE_MS) {
+          throw new Error('execute_at must be a future timestamp');
+        }
+        if (executeAt.getTime() > now + ONE_YEAR_MS) {
+          throw new Error('execute_at must be within 1 year from now');
         }
         return true;
       }),
