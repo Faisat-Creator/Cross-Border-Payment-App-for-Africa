@@ -223,7 +223,7 @@ async function approveKYC(req, res, next) {
     }
 
     const adminWallet = await db.query(
-      "SELECT public_key FROM wallets WHERE user_id = $1",
+      "SELECT public_key FROM wallets WHERE user_id = $1 ORDER BY is_default DESC, created_at ASC LIMIT 1",
       [req.user.userId]
     );
     const adminPublicKey = adminWallet.rows[0]?.public_key;
@@ -278,7 +278,7 @@ async function revokeKYC(req, res, next) {
     }
 
     const adminWallet = await db.query(
-      "SELECT public_key FROM wallets WHERE user_id = $1",
+      "SELECT public_key FROM wallets WHERE user_id = $1 ORDER BY is_default DESC, created_at ASC LIMIT 1",
       [req.user.userId]
     );
     const adminPublicKey = adminWallet.rows[0]?.public_key;
@@ -1028,7 +1028,7 @@ async function bulkKycUpdate(req, res, next) {
 
     // Get admin wallet for on-chain operations
     const adminWallet = await db.query(
-      "SELECT public_key FROM wallets WHERE user_id = $1",
+      "SELECT public_key FROM wallets WHERE user_id = $1 ORDER BY is_default DESC, created_at ASC LIMIT 1",
       [req.user.userId]
     );
     const adminPublicKey = adminWallet.rows[0]?.public_key;

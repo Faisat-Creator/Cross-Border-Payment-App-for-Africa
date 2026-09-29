@@ -21,7 +21,7 @@ router.post('/open',
   async (req, res, next) => {
     try {
       const { rows: [wallet] } = await db.query(
-        'SELECT public_key, encrypted_secret_key FROM wallets WHERE user_id = $1',
+        'SELECT public_key, encrypted_secret_key FROM wallets WHERE user_id = $1 ORDER BY is_default DESC, created_at ASC LIMIT 1',
         [req.user.userId]
       );
       if (!wallet) return res.status(400).json({ error: 'Wallet not found' });
@@ -67,7 +67,7 @@ router.post('/close',
   async (req, res, next) => {
     try {
       const { rows: [wallet] } = await db.query(
-        'SELECT encrypted_secret_key FROM wallets WHERE user_id = $1',
+        'SELECT encrypted_secret_key FROM wallets WHERE user_id = $1 ORDER BY is_default DESC, created_at ASC LIMIT 1',
         [req.user.userId]
       );
       if (!wallet) return res.status(400).json({ error: 'Wallet not found' });

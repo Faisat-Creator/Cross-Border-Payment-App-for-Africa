@@ -92,7 +92,7 @@ router.post('/swap',
       const { sell_asset, sell_amount, buy_asset, slippage_pct, min_received } = req.body;
 
       const walletResult = await db.query(
-        'SELECT public_key, encrypted_secret_key FROM wallets WHERE user_id = $1',
+        'SELECT public_key, encrypted_secret_key FROM wallets WHERE user_id = $1 ORDER BY is_default DESC, created_at ASC LIMIT 1',
         [req.user.userId]
       );
       if (!walletResult.rows[0]) return res.status(404).json({ error: 'Wallet not found' });

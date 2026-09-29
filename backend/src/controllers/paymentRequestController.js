@@ -13,7 +13,7 @@ async function create(req, res, next) {
 
     // Get requester's wallet
     const walletResult = await db.query(
-      'SELECT public_key FROM wallets WHERE user_id = $1',
+      'SELECT public_key FROM wallets WHERE user_id = $1 ORDER BY is_default DESC, created_at ASC LIMIT 1',
       [userId]
     );
     if (!walletResult.rows[0]) {

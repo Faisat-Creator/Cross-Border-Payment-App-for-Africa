@@ -109,7 +109,7 @@ async function create(req, res, next) {
     }
 
     const walletResult = await db.query(
-      "SELECT public_key, encrypted_secret_key FROM wallets WHERE user_id = $1",
+      "SELECT public_key, encrypted_secret_key FROM wallets WHERE user_id = $1 ORDER BY is_default DESC, created_at ASC LIMIT 1",
       [req.user.userId]
     );
     if (!walletResult.rows[0]) {
@@ -202,7 +202,7 @@ async function confirm(req, res, next) {
 
     // Verify the authenticated agent is the assigned agent for this escrow
     const agentWalletResult = await db.query(
-      "SELECT public_key FROM wallets WHERE user_id = $1",
+      "SELECT public_key FROM wallets WHERE user_id = $1 ORDER BY is_default DESC, created_at ASC LIMIT 1",
       [req.user.userId]
     );
     if (!agentWalletResult.rows[0] || agentWalletResult.rows[0].public_key !== escrow.agent_wallet) {
@@ -287,7 +287,7 @@ async function cancel(req, res, next) {
     }
 
     const walletResult = await db.query(
-      "SELECT encrypted_secret_key FROM wallets WHERE user_id = $1",
+      "SELECT encrypted_secret_key FROM wallets WHERE user_id = $1 ORDER BY is_default DESC, created_at ASC LIMIT 1",
       [req.user.userId]
     );
 
