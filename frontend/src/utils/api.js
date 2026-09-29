@@ -3,7 +3,24 @@ import toast from 'react-hot-toast';
 import { enqueuePayment } from './offlineDB';
 import { tokenStore } from '../context/AuthContext';
 
-const baseURL = process.env.REACT_APP_API_URL || 'http://localhost:5000/api';
+// FE-130: Normalise the base URL so both http://localhost:5000 and
+// http://localhost:5000/api are accepted.  The canonical form used by api.js
+// is always …/api (no trailing slash), so a missing path suffix is appended
+// and a stray trailing slash is stripped at the same time.
+function normaliseBaseUrl(raw) {
+  let url = (raw || 'http://localhost:5000/api').replace(/\/+$/, '');
+  if (!url.endsWith('/api')) {
+    // eslint-disable-next-line no-console
+    console.warn(
+      `[AfriPay] REACT_APP_API_URL "${url}" does not end with /api — appending it. ` +
+        'Update CI and .env files to use the full path (e.g. http://localhost:5000/api).',
+    );
+    url = `${url}/api`;
+  }
+  return url;
+}
+
+const baseURL = normaliseBaseUrl(process.env.REACT_APP_API_URL);
 
 const DEFAULT_TIMEOUT = 30000;
 const envTimeout = parseInt(process.env.REACT_APP_API_TIMEOUT_MS, 10);

@@ -37,7 +37,9 @@ import PINSetupModal from '../components/PINSetupModal';
 import { usePushNotifications } from '../hooks/usePushNotifications';
 import { getQueueCount } from '../utils/offlineDB';
 
-const IS_TESTNET = process.env.REACT_APP_STELLAR_NETWORK !== 'mainnet';
+// FE-129: IS_TESTNET is now sourced from the shared network config module so
+// that Dashboard and every other Stellar-aware file agree on the same value.
+import { IS_TESTNET } from '../config/network';
 const MAX_WALLETS = 5;
 
 function BalanceDisplay({ balance }) {
