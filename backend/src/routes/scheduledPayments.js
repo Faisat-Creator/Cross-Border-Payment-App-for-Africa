@@ -109,20 +109,6 @@ router.put(
         }
         return true;
       }),
-    body('execute_at')
-      .optional()
-      .isISO8601().withMessage('execute_at must be a valid ISO 8601 timestamp')
-      .custom((value) => {
-        const executeAt = new Date(value);
-        const now = Date.now();
-        if (executeAt.getTime() < now + ONE_MINUTE_MS) {
-          throw new Error('execute_at must be a future timestamp');
-        }
-        if (executeAt.getTime() > now + ONE_YEAR_MS) {
-          throw new Error('execute_at must be within 1 year from now');
-        }
-        return true;
-      }),
   ],
   validate,
   update,

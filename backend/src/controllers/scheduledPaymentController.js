@@ -17,28 +17,16 @@ async function create(req, res, next) {
       return res.status(400).json({ error: 'Invalid recipient wallet address' });
     }
 
-    // BE-126: the active scheduled-payments job reads the authoritative
-    // `run_at` / `status` columns. Persist the user-supplied first execution
-    // time into `run_at` so the job actually fires when the user expects.
     const id = uuidv4();
-    const runAt = new Date(execute_at);
-
-    // The job requires a sender wallet to sign the payment. Resolve the
-    // user's primary wallet from the wallets table.
-    const walletResult = await db.query(
-      'SELECT public_key FROM wallets WHERE user_id = $1 ORDER BY created_at ASC LIMIT 1',
-      [userId]
-    );
-    const senderWallet = walletResult.rows[0]?.public_key;
-    if (!senderWallet) {
-      return res.status(400).json({ error: 'No wallet found for user' });
+    const nextRunAt = execute_at ? new Date(execute_at) : new Date(Date.now() + 3600000);
+    if (Number.isNaN(nextRunAt.getTime())) {
+      return res.status(400).json({ error: 'Invalid execute_at date' });
     }
 
     await db.query(
-      `INSERT INTO scheduled_payments
-         (id, user_id, sender_wallet, recipient_wallet, amount, asset, frequency, run_at, memo, status)
-       VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, 'pending')`,
-      [id, userId, senderWallet, recipient_wallet, amount, asset, frequency, runAt, memo || null]
+      `INSERT INTO scheduled_payments (id, user_id, recipient_wallet, amount, asset, frequency, next_run_at, memo)
+       VALUES ($1, $2, $3, $4, $5, $6, $7, $8),
+      [id, userId, recipient_wallet, amount, asset, frequency, nextRunAt, memo || null]
     );
 
     res.json({ id, message: 'Scheduled payment created' });
@@ -51,20 +39,11 @@ async function list(req, res, next) {
   try {
     const userId = req.user.userId;
 
-    // BE-126: expose the job's authoritative fields (run_at/status) and
-    // alias them to the legacy next_run_at/active names the UI expected,
-    // so displayed state matches what the job will actually do.
     const result = await db.query(
-      `SELECT id, recipient_wallet, amount, asset, frequency,
-              run_at AS next_run_at,
-              (status = 'pending') AS active,
-              status,
-              run_at,
-              last_error,
-              created_at, updated_at
+      `SELECT id, recipient_wallet, amount, asset, frequency, next_run_at, active, last_run_at, failed_attempts
        FROM scheduled_payments
        WHERE user_id = $1
-       ORDER BY run_at ASC`,
+       ORDER BY next_run_at ASC`,
       [userId]
     );
 
@@ -87,21 +66,23 @@ async function update(req, res, next) {
       return res.status(400).json({ error: 'Invalid recipient wallet address' });
     }
 
-    // Map the legacy `active` boolean onto the job's `status` column.
-    const newStatus = active === undefined || active === null
-      ? null
-      : (active ? 'pending' : 'cancelled');
+    let nextRunAt = null;
+    if (execute_at !== undefined && execute_at !== null) {
+      nextRunAt = new Date(execute_at);
+      if (Number.isNaN(nextRunAt.getTime())) {
+        return res.status(400).json({ error: 'Invalid execute_at date' });
+      }
+    }
 
     const result = await db.query(
       `UPDATE scheduled_payments
        SET amount = COALESCE($1, amount),
            frequency = COALESCE($2, frequency),
-           status = COALESCE($3, status),
+           active = COALESCE($3, active),
            recipient_wallet = COALESCE($4, recipient_wallet),
-           run_at = COALESCE($5, run_at),
-           updated_at = NOW()
-       WHERE id = $6 AND user_id = $7`,
-      [amount, frequency, newStatus, recipient_wallet, execute_at ? new Date(execute_at) : null, id, userId]
+           next_run_at = COALESCE($7, next_run_at)
+       WHERE id = $5 AND user_id = $6`,
+      [amount, frequency, active, recipient_wallet, id, userId, nextRunAt]
     );
 
     if (result.rowCount === 0) {
