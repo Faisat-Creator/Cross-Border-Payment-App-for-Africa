@@ -18,6 +18,7 @@ const isValidAddress = (v) => {
 };
 
 router.use(authMiddleware);
+router.use(readLimiter);
 
 router.get(
   "/",
