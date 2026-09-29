@@ -61,9 +61,6 @@ if (process.env.TRUST_PROXY) {
 }
 
 app.use(Sentry.Handlers.requestHandler());
-// Serve uploaded avatars
-const path = require('path');
-app.use('/uploads/avatars', express.static(path.join(__dirname, '../uploads/avatars')));
 
 app.use(requestId);
 app.use((req, res, next) => {
@@ -76,11 +73,14 @@ app.use((req, res, next) => {
   res.locals.cspNonce = crypto.randomBytes(16).toString('base64');
   next();
 });
-app.use((req, res, next) => helmet({
+
+// Helmet is instantiated once at startup. The per-request CSP nonce is supplied
+// via a directive function that reads res.locals.cspNonce at request time.
+const helmetMiddleware = helmet({
   contentSecurityPolicy: {
     directives: {
       defaultSrc: ["'none'"],
-      scriptSrc: ["'self'", `'nonce-${res.locals.cspNonce}'`],
+      scriptSrc: ["'self'", (req, res) => `'nonce-${res.locals.cspNonce}'`],
       connectSrc: ["'self'", 'https://horizon.stellar.org', 'wss://horizon.stellar.org'],
       imgSrc: ["'self'", 'data:'],
       frameAncestors: ["'none'"],
@@ -93,13 +93,15 @@ app.use((req, res, next) => helmet({
   },
   frameguard: { action: 'deny' },
   referrerPolicy: { policy: 'strict-origin-when-cross-origin' },
-  permissionsPolicy: {
-    camera: [],
-    microphone: [],
-    geolocation: [],
-    payment: [],
-  },
-})(req, res, next));
+});
+app.use(helmetMiddleware);
+
+// Helmet 8 has no `permissionsPolicy` option, so emit the header explicitly.
+app.use((req, res, next) => {
+  res.setHeader('Permissions-Policy', 'camera=(), microphone=(), geolocation=(), payment=()');
+  next();
+});
+
 app.use(cors({ origin: process.env.FRONTEND_URL, credentials: true, maxAge: 86400 }));
 app.use(express.json());
 
@@ -107,6 +109,16 @@ app.use((req, res, next) => {
   res.removeHeader('Server');
   next();
 });
+
+// Serve uploaded avatars after the security middleware so responses carry
+// nosniff, CSP and Cross-Origin-Resource-Policy headers.
+const path = require('path');
+app.use('/uploads/avatars', express.static(path.join(__dirname, '../uploads/avatars'), {
+  setHeaders: (res) => {
+    res.setHeader('X-Content-Type-Options', 'nosniff');
+    res.setHeader('Content-Disposition', 'inline');
+  },
+}));
 
 // Granular per-endpoint rate limiting (Redis-backed when REDIS_URL is set)
 app.use('/api/auth/login', rateLimiters.authLimiter);
@@ -207,4 +219,4 @@ const swaggerOptions = {
         // validators/paymentSendValidators.js so the docs cannot drift from
         // what the runtime v
 
-/* … truncated 2727 chars — edit only what you need near the top … */
+/* … truncated 72 chars — edit only what you need near the top … */
