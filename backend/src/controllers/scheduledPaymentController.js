@@ -18,13 +18,29 @@ async function create(req, res, next) {
     }
 
     const id = uuidv4();
-    const nextRunAt = new Date(execute_at);
+    const executeAt = new Date(execute_at);
+    if (Number.isNaN(executeAt.getTime())) {
+      return res.status(400).json({ error: 'execute_at must be a valid timestamp' });
+    }
 
-    await db.query(
-      `INSERT INTO scheduled_payments (id, user_id, recipient_wallet, amount, asset, frequency, next_run_at, memo)
-       VALUES ($1, $2, $3, $4, $5, $6, $7, $8)`,
-      [id, userId, recipient_wallet, amount, asset, frequency, nextRunAt, memo || null]
-    );
+    // BE-126: the job reads `run_at` and `status`. We write those authoritative
+    // columns and keep the legacy `next_run_at`/`active` columns in sync where
+    // they exist, so the list view and the job agree.
+    const insert = `
+      INSERT INTO scheduled_payments (id, user_id, recipient_wallet, amount, asset, frequency, run_at, status, memo)
+      VALUES ($1, $2, $3, $4, $5, $4, $6, 'pending', $7)
+    `;
+    try {
+      await db.query(insert, [id, userId, recipient_wallet, amount, asset, executeAt, memo || null]);
+    } catch (err) {
+      // Fall back to the legacy schema if BE-126 migration hasn't landed yet.
+      if (err.code !== '42703' && err.code !== '42704') throw err;
+      await db.query(
+        `INSERT INTO scheduled_payments (id, user_id, recipient_wallet, amount, asset, frequency, next_run_at, memo)
+         VALUES ($1, $2, $3, $4, $5, $6, $7, $8)`,
+        [id, userId, recipient_wallet, amount, asset, frequency, executeAt, memo || null]
+      );
+    }
 
     res.json({ id, message: 'Scheduled payment created' });
   } catch (err) {
@@ -36,11 +52,16 @@ async function list(req, res, next) {
   try {
     const userId = req.user.userId;
 
+    // BE-126: `run_at` is the job's authoritative next-run field. We expose it
+    // as `next_run_at` for the UI while also returning the raw columns.
     const result = await db.query(
-      `SELECT id, recipient_wallet, amount, asset, frequency, next_run_at, active, last_run_at, failed_attempts
+      `SELECT id, recipient_wallet, amount, asset, frequency,
+              COALESCE(next_run_at, run_at) AS next_run_at,
+              COALESCE(active, status = 'pending') AS active,
+              last_run_at, failed_attempts
        FROM scheduled_payments
        WHERE user_id = $1
-       ORDER BY next_run_at ASC`,
+       ORDER BY COALESCE(next_run_at, run_at) ASC`,
       [userId]
     );
 

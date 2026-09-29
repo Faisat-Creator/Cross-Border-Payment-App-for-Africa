@@ -12,7 +12,6 @@ const validate = (req, res, next) => {
   next();
 };
 
-const ONE_MINUTE_MS = 60 * 1000;
 const ONE_YEAR_MS = 365 * 24 * 60 * 60 * 1000;
 
 /**
@@ -44,7 +43,7 @@ const ONE_YEAR_MS = 365 * 24 * 60 * 60 * 1000;
  *               execute_at:
  *                 type: string
  *                 format: date-time
- *                 description: Must be at least 1 minute in the future and within 1 year
+ *                 description: Must be a future timestamp within 1 year
  *               memo:
  *                 type: string
  *     responses:
@@ -77,7 +76,7 @@ router.post(
       .custom((value) => {
         const executeAt = new Date(value);
         const now = Date.now();
-        if (executeAt.getTime() < now + ONE_MINUTE_MS) {
+        if (executeAt.getTime() <= now) {
           throw new Error('execute_at must be a future timestamp');
         }
         if (executeAt.getTime() > now + ONE_YEAR_MS) {

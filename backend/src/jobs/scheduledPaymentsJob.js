@@ -9,6 +9,11 @@
  *   - backend/src/services/scheduledPaymentsJob.js (own setInterval loop, scheduled_at schema)
  * Both were dead code and have been removed. This is the only implementation.
  *
+ * BE-126: The authoritative columns are `run_at` and `status`. The FE-133
+ * list view must read these fields (not the legacy `next_run_at`/`active`).
+ * This job also exposes a normalizer for the API response so the frontend
+ * can read the next run time from the backend's authoritative field.
+ *
  * Double-execution safety:
  *   1. A distributed lock (utils/distributedLock.withLock) ensures only one
  *      process instance runs doProcess() at a time across all app instances.
@@ -24,6 +29,26 @@ const { withLock } = require('../utils/distributedLock');
 const LOCK_KEY = 'lock:scheduled_payments';
 const LOCK_TTL = parseInt(process.env.SCHEDULED_JOB_LOCK_TTL_SECS || '55', 10);
 
+/**
+ * Normalize a scheduled-payment row for API consumption.
+ *
+ * BE-126 made `run_at`/`status` the authoritative columns. The list view
+ * expects `next_run_at`/`active`, so we expose both aliases and keep the
+ * authoritative fields as the source of truth.
+ */
+function normalizeScheduledPayment(row) {
+  if (!row) return row;
+  const nextRunAt = row.run_at || row.next_run_at || null;
+  const status = row.status || (row.active ? 'pending' : 'paused');
+  return {
+    ...row,
+    run_at: nextRunAt,
+    next_run_at: nextRunAt,
+    status,
+    active: status === 'pending',
+  };
+}
+
 // Claim a batch of due payments atomically to avoid double-processing
 async function claimDuePayments() {
   const { rows } = await db.query(
@@ -36,7 +61,8 @@ async function claimDuePayments() {
        LIMIT 50
        FOR UPDATE SKIP LOCKED
      )
-     RETURNING *`
+     RETURNING *
+`
   );
   return rows;
 }
@@ -113,4 +139,4 @@ async function processScheduledPayments() {
   }
 }
 
-module.exports = { processScheduledPayments };
+module.exports = { processScheduledPayments, normalizeScheduledPayment };
