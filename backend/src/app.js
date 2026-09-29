@@ -56,6 +56,14 @@ const app = express();
 const trustedProxies = (process.env.TRUSTED_PROXIES || '').split(',').map((value) => value.trim()).filter(Boolean);
 app.set('trust proxy', trustedProxies.length ? trustedProxies : false);
 
+// Trust the configured number of proxy hops (e.g. TRUST_PROXY=1 behind a single load balancer)
+// so req.ip reflects the real client address for the admin IP allow-list and rate limiting.
+if (process.env.TRUST_PROXY) {
+  const tp = process.env.TRUST_PROXY;
+  app.set('trust proxy', /^\d+$/.test(tp) ? parseInt(tp, 10) : tp === 'true' ? true : tp);
+}
+
+app.use(Sentry.Handlers.requestHandler());
 // Serve uploaded avatars
 const path = require('path');
 app.use('/uploads/avatars', express.static(path.join(__dirname, '../uploads/avatars')));
@@ -108,23 +116,23 @@ app.use('/api/auth/login', rateLimiters.authLimiter);
 app.use('/api/auth/register', rateLimiters.authLimiter);
 
 app.use('/api/auth', authRoutes);
-app.use('/api/wallet', walletRoutes);
+app.use('/api/wallet', geoRestriction, walletRoutes);
 app.use('/api/payments', geoRestriction, paymentRoutes);
 app.use('/api/payment-requests', geoRestriction, paymentRequestRoutes);
 app.use('/api/scheduled-payments', geoRestriction, scheduledPaymentRoutes);
 app.use('/api/savings', geoRestriction, savingsRoutes);
-app.use('/api/anchor', anchorRoutes);
+app.use('/api/anchor', geoRestriction, anchorRoutes);
 app.use('/api/analytics', analyticsRoutes);
-app.use('/api/dex', dexRoutes);
+app.use('/api/dex', geoRestriction, dexRoutes);
 app.use('/api/support', supportRoutes);
-app.use('/api/escrow', agentEscrowRoutes);
+app.use('/api/escrow', geoRestriction, agentEscrowRoutes);
 app.use('/api/referrals', referralRoutes);
 app.use('/api/loyalty', loyaltyRoutes);
 app.use('/api/disputes', disputeRoutes);
 app.use('/api/kyc', kycRoutes);
 app.use('/api/admin', ipAllowlist, adminRoutes);
 app.use('/api/prices', pricesRoutes);
-app.use('/api/channels', channelsRoutes);
+app.use('/api/channels', geoRestriction, channelsRoutes);
 app.use('/api/contracts', contractsRoutes);
 app.use('/api/ledger', ledgerRoutes);
 app.use('/api/contacts', contactsRoutes);
@@ -134,7 +142,7 @@ app.use('/api/assets', assetsRoutes);
 app.use('/api/notifications', notificationRoutes);
 app.use('/.well-known/stellar', sep10Routes);
 app.use('/api/sep10', sep10Routes);
-app.use('/api/sep31', sep31Routes);
+app.use('/api/sep31', geoRestriction, sep31Routes);
 // BE-031: /api/dev is reserved exclusively for the env-gated developer router
 // below. A "legacy alias" that also mounted toolsRoutes at /api/dev used to
 // live here (removed) — its naming collision with this router was flagged as

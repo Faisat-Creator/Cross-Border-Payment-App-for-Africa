@@ -38,7 +38,7 @@ function DeliveryLog({ webhookId }) {
 
   useEffect(() => {
     if (expanded) loadDeliveries();
-  }, [expanded, webhookId]);
+  }, [expanded, webhookId]); // eslint-disable-line react-hooks/exhaustive-deps -- loader only depends on webhookId
 
   return (
     <div className="border-t border-gray-700 pt-2 mt-2">

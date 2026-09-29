@@ -115,6 +115,15 @@ api.interceptors.request.use(async (config) => {
   return config;
 });
 
+// Instead of a hard navigation (which loses the current URL, e.g. reset-password
+// tokens), signal AuthContext to drop the session. PrivateRoute then redirects
+// protected pages to /login while remembering where the user was.
+export const SESSION_EXPIRED_EVENT = 'afripay:session-expired';
+function notifySessionExpired() {
+  tokenStore.clear();
+  window.dispatchEvent(new Event(SESSION_EXPIRED_EVENT));
+}
+
 api.interceptors.response.use(
   (res) => res,
   async (err) => {
@@ -150,11 +159,9 @@ api.interceptors.response.use(
         const silent401 =
           url.includes('/auth/login') ||
           url.includes('/auth/register') ||
-          url.includes('/auth/verify-pin');
-        if (!silent401) {
-          tokenStore.clear();
-          window.location.href = '/login';
-        }
+          url.includes('/auth/verify-pin') ||
+          url.includes('/auth/refresh');
+        if (!silent401) notifySessionExpired();
       }
       return Promise.reject(err);
     }
@@ -175,8 +182,7 @@ api.interceptors.response.use(
     isRefreshing = true;
 
     try {
-      const { data } = await refreshClient.post('/auth/refresh', {});
-      const newToken = data.token;
+      const newToken = await refreshSession();
       // Store new token in memory only — never in localStorage
       tokenStore.set(newToken);
       processQueue(null, newToken);
@@ -184,13 +190,28 @@ api.interceptors.response.use(
       return api.request(originalRequest);
     } catch (refreshErr) {
       processQueue(refreshErr, null);
-      tokenStore.clear();
-      window.location.href = '/login';
+      notifySessionExpired();
       return Promise.reject(refreshErr);
     } finally {
       isRefreshing = false;
     }
   }
 );
+
+/**
+ * Refresh the session, serialised across tabs with the Web Locks API so two
+ * tabs never present the same refresh cookie at once (BE-137). The second
+ * tab waits and then refreshes with the already-rotated cookie.
+ */
+export async function refreshSession() {
+  const doRefresh = async () => {
+    const { data } = await refreshClient.post('/auth/refresh', {});
+    return data.token;
+  };
+  if (typeof navigator !== 'undefined' && navigator.locks?.request) {
+    return navigator.locks.request('afripay-auth-refresh', doRefresh);
+  }
+  return doRefresh();
+}
 
 export default api;

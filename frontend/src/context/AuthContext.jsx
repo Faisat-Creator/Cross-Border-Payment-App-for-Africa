@@ -1,6 +1,8 @@
 import React, { createContext, useContext, useState, useEffect, useRef } from 'react';
 import * as Sentry from '@sentry/react';
+import api, { refreshSession } from '../utils/api';
 import api from '../utils/api';
+import { clearUserStorage } from '../utils/userStorage';
 
 function maskWalletAddress(address) {
   if (!address || address.length < 8) return address;
@@ -13,9 +15,12 @@ export const AuthContext = createContext(null);
 // Exported so api.js can read the current token without a circular import.
 export const tokenStore = {
   token: null,
+  listeners: new Set(),
   get() { return this.token; },
-  set(t) { this.token = t; },
-  clear() { this.token = null; },
+  set(t) { this.token = t; this.listeners.forEach((fn) => fn(t)); },
+  clear() { this.token = null; this.listeners.forEach((fn) => fn(null)); },
+  /** Subscribe to token changes (e.g. to reconnect sockets); returns unsubscribe. */
+  subscribe(fn) { this.listeners.add(fn); return () => this.listeners.delete(fn); },
 };
 
 export function AuthProvider({ children }) {
@@ -25,14 +30,22 @@ export function AuthProvider({ children }) {
   // On mount: attempt a silent refresh using the httpOnly cookie.
   // If the cookie is valid the backend returns a new access token.
   useEffect(() => {
-    api.post('/auth/refresh', {})
-      .then((res) => {
-        tokenStore.set(res.data.token);
+    refreshSession()
+      .then((token) => {
+        tokenStore.set(token);
         return api.get('/auth/me');
       })
       .then((res) => setUser(res.data))
       .catch(() => { /* no valid session — stay logged out */ })
       .finally(() => setLoading(false));
+  }, []);
+
+  // api.js signals an expired session; clearing the user lets PrivateRoute
+  // redirect protected pages while public pages stay put.
+  useEffect(() => {
+    const onExpired = () => setUser(null);
+    window.addEventListener('afripay:session-expired', onExpired);
+    return () => window.removeEventListener('afripay:session-expired', onExpired);
   }, []);
 
   // Device-trust is carried by an httpOnly cookie the backend sets on login
@@ -61,7 +74,7 @@ export function AuthProvider({ children }) {
       /* still clear local session */
     }
     tokenStore.clear();
-    localStorage.removeItem('afripay_slippage');
+    clearUserStorage();
     setUser(null);
     Sentry.setUser(null);
   };

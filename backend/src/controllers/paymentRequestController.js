@@ -32,7 +32,10 @@ async function create(req, res, next) {
     );
 
     const domain = process.env.FRONTEND_URL || 'http://localhost:3000';
-    const paymentLink = `${domain}/send?to=${requesterWallet}&amount=${amount}&asset=${asset}${memo ? `&memo=${encodeURIComponent(memo)}` : ''}&request=${requestId}`;
+    // Only the request ID is embedded in the link. The canonical requester
+    // wallet, amount, asset and memo are always loaded server-side from the
+    // stored request, so tampering with URL params cannot redirect funds.
+    const paymentLink = `${domain}/send?request=${requestId}`;
 
     res.json({
       id: requestId,

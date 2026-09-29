@@ -91,7 +91,7 @@ export default function OfflineBanner({ onPaymentSynced }) {
     };
 
     syncQueue();
-  }, [isOnline]); // eslint-disable-line react-hooks/exhaustive-deps
+  }, [isOnline]); // eslint-disable-line react-hooks/exhaustive-deps -- react only to connectivity transitions
 
   // Show the "back online" notice for 4 seconds after reconnecting
   useEffect(() => {

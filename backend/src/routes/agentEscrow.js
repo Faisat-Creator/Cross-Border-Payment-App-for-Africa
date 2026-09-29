@@ -1,9 +1,8 @@
 const router = require("express").Router();
-const { body, param, validationResult } = require("express-validator");
+const { body, param, query, validationResult } = require("express-validator");
 const StellarSdk = require("@stellar/stellar-sdk");
 const authMiddleware = require("../middleware/auth");
-const { readLimiter } = require("../middleware/rateLimiter");
-const { create, confirm, cancel, getEscrow } = require("../controllers/agentEscrowController");
+const { create, confirm, cancel, getEscrow, listEscrows } = require("../controllers/agentEscrowController");
 
 const validate = (req, res, next) => {
   const errors = validationResult(req);
@@ -20,6 +19,18 @@ const isValidAddress = (v) => {
 
 router.use(authMiddleware);
 router.use(readLimiter);
+
+router.get(
+  "/",
+  [
+    query("role").optional().isIn(["sender", "agent"]).withMessage("role must be sender or agent"),
+    query("status").optional().isString(),
+    query("page").optional().isInt({ min: 1 }).toInt(),
+    query("limit").optional().isInt({ min: 1, max: 100 }).toInt(),
+  ],
+  validate,
+  listEscrows
+);
 
 router.post(
   "/create",

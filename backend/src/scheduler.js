@@ -83,4 +83,8 @@ function startScheduler() {
   logger.info('Notification cleanup job registered', { cron: NOTIFICATION_CLEANUP_CRON });
 }
 
-module.exports = { startScheduler };
+function stopScheduler() {
+  for (const task of cron.getTasks().values()) task.stop();
+}
+
+module.exports = { startScheduler, stopScheduler };
