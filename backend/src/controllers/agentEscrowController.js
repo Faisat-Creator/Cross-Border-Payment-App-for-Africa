@@ -19,9 +19,30 @@ const audit = require("../services/audit");
 
 const DEFAULT_FEE_BPS = parseInt(process.env.ESCROW_FEE_BPS || "250", 10);
 
+// The agent-escrow contract only ever locks its configured USDC token, so any
+// other client-supplied asset would diverge from on-chain state.
+const ESCROW_ASSET = "USDC";
+
 const ESCROW_STATUSES = ["pending", "completed", "cancelled"];
 const DEFAULT_PAGE_SIZE = 20;
 const MAX_PAGE_SIZE = 100;
+
+/**
+ * Convert a decimal amount string to stroops (1e7 base units) without
+ * floating-point error. Rejects non-decimal strings and more than 7 places.
+ * Returns null when the input is not a valid amount.
+ */
+function amountToStroops(amount) {
+  if (typeof amount !== "string") return null;
+  const trimmed = amount.trim();
+  if (!/^\d+(\.\d{1,7})?$/.test(trimmed)) return null;
+
+  const [whole, fraction = ""] = trimmed.split(".");
+  const paddedFraction = (fraction + "0000000").slice(0, 7);
+  const stroops = BigInt(whole) * 10000000n + BigInt(paddedFraction);
+  if (stroops <= 0n) return null;
+  return stroops;
+}
 
 /**
  * GET /api/escrow?role=sender|agent&status=…&page=1&limit=20
@@ -97,7 +118,26 @@ async function list(req, res, next) {
 async function create(req, res, next) {
   const escrowDbId = uuidv4();
   try {
-    const { agent_wallet, recipient_wallet, amount, asset = "USDC" } = req.body;
+    const { agent_wallet, recipient_wallet, amount, asset = ESCROW_ASSET } = req.body;
+
+    // The contract only locks its configured USDC token; reject anything else
+    // so the DB record cannot diverge from on-chain state.
+    if (asset !== ESCROW_ASSET) {
+      return res.status(400).json({
+        error: `Unsupported asset. Only ${ESCROW_ASSET} is accepted.`,
+        code: "UNSUPPORTED_ASSET",
+      });
+    }
+
+    // Validate the amount as a decimal string with at most 7 places and convert
+    // to stroops without floating-point error.
+    const amountStroops = amountToStroops(amount);
+    if (amountStroops === null) {
+      return res.status(400).json({
+        error: "Invalid amount. Provide a positive decimal string with at most 7 decimal places.",
+        code: "INVALID_AMOUNT",
+      });
+    }
 
     // Validate that the agent is a registered, approved AfriPay agent
     const agentResult = await db.query(
@@ -144,7 +184,7 @@ async function create(req, res, next) {
       encryptedSecretKey: encrypted_secret_key,
       recipient: recipient_wallet,
       agent: agent_wallet,
-      amount: Math.round(parseFloat(amount) * 1e7), // convert to stroops
+      amount: amountStroops.toString(), // stroops, converted without float error
       feeBps: DEFAULT_FEE_BPS,
     });
 
@@ -232,157 +272,5 @@ async function confirm(req, res, next) {
     await db.query(
       "UPDATE agent_escrows SET status = 'completed', confirm_tx_hash = $1, confirmed_at = NOW() WHERE id = $2",
       [txHash, id]
-    );
 
-    // Notify sender
-    const senderResult = await db.query(
-      "SELECT u.email, u.full_name, a.full_name AS agent_name FROM users u JOIN wallets w ON w.user_id = u.id LEFT JOIN agents a ON a.wallet_address = $2 WHERE w.public_key = $1 LIMIT 1",
-      [escrow.sender_wallet, escrow.agent_wallet]
-    );
-    if (senderResult.rows[0]) {
-      const { email, full_name, agent_name } = senderResult.rows[0];
-      enqueueEmail({
-        to: email,
-        subject: "Your AfriPay payment has been delivered",
-        html: `<p>Hi ${full_name},</p><p>Your payment of <strong>${escrow.amount} ${escrow.asset}</strong> has been delivered to ${escrow.recipient_wallet} by agent <strong>${agent_name || escrow.agent_wallet}</strong>.</p>`,
-      }).catch(() => {});
-    }
-
-    await audit.log(
-      req.user.userId,
-      "agent_escrow_confirmed",
-      req.ip,
-      req.headers["user-agent"],
-      { escrow_id: id, agent_id: req.user.userId, tx_hash: txHash }
-    );
-
-    res.json({ message: "Payout confirmed", tx_hash: txHash });
-  } catch (err) {
-    next(err);
-  }
-}
-
-/**
- * POST /api/escrow/:id/cancel
- * Sender cancels after the 48-hour window.
- */
-async function cancel(req, res, next) {
-  try {
-    const { id } = req.params;
-
-    const escrowResult = await db.query(
-      "SELECT * FROM agent_escrows WHERE id = $1",
-      [id]
-    );
-    if (!escrowResult.rows[0]) {
-      return res.status(404).json({ error: "Escrow not found" });
-    }
-    const escrow = escrowResult.rows[0];
-
-    if (escrow.status !== "pending") {
-      return res.status(400).json({ error: "Escrow is not pending" });
-    }
-    if (escrow.sender_wallet !== req.user.walletAddress) {
-      return res.status(403).json({ error: "Only the sender can cancel this escrow" });
-    }
-
-    const walletResult = await db.query(
-      "SELECT encrypted_secret_key FROM wallets WHERE user_id = $1",
-      [req.user.userId]
-    );
-
-    const { txHash } = await cancelEscrow({
-      encryptedSecretKey: walletResult.rows[0].encrypted_secret_key,
-      escrowId: escrow.contract_escrow_id,
-    });
-
-    await db.query(
-      "UPDATE agent_escrows SET status = 'cancelled', confirm_tx_hash = $1 WHERE id = $2",
-      [txHash, id]
-    );
-
-    res.json({ message: "Escrow cancelled, funds refunded", tx_hash: txHash });
-  } catch (err) {
-    next(err);
-  }
-}
-
-/**
- * POST /api/contracts/escrow/:id/partial-release
- * Body: { amount }
- *
- * Sender releases part of a pending escrow to the agent (issue #657).
- * Validates the amount against the remaining balance, applies the platform fee,
- * records the cumulative released amount, and returns the new remaining balance.
- */
-async function partialRelease(req, res, next) {
-  const { id } = req.params;
-  const amount = parseFloat(req.body.amount);
-
-  if (!Number.isFinite(amount) || amount <= 0) {
-    return res.status(400).json({ error: "Amount must be greater than 0" });
-  }
-
-  const client = await db.pool.connect();
-  try {
-    await client.query("BEGIN");
-
-    // Lock the escrow row for the duration of the transaction so concurrent
-    // partial-release requests serialize instead of racing on a stale read.
-    const escrowResult = await client.query(
-      "SELECT * FROM agent_escrows WHERE id = $1 FOR UPDATE",
-      [id]
-    );
-    if (!escrowResult.rows[0]) {
-      await client.query("ROLLBACK");
-      return res.status(404).json({ error: "Escrow not found" });
-    }
-
-    const escrow = escrowResult.rows[0];
-
-    if (escrow.status !== "pending") {
-      await client.query("ROLLBACK");
-      return res.status(400).json({ error: "Escrow is not pending" });
-    }
-
-    if (escrow.sender_wallet !== req.user.walletAddress) {
-      await client.query("ROLLBACK");
-      return res.status(403).json({ error: "Only the sender can release funds" });
-    }
-
-    const total = parseFloat(escrow.amount);
-    const released = parseFloat(escrow.released_amount || 0);
-    const remaining = total - released;
-
-    if (amount > remaining) {
-      await client.query("ROLLBACK");
-      return res.status(400).json({ error: "Amount exceeds remaining escrow balance" });
-    }
-
-    const fee = (amount * escrow.fee_bps) / 10000;
-    const netAmount = amount - fee;
-    const newReleased = released + amount;
-
-    await client.query(
-      "UPDATE agent_escrows SET released_amount = $1 WHERE id = $2",
-      [newReleased, id]
-    );
-
-    await client.query("COMMIT");
-
-    res.json({
-      message: "Partial release recorded",
-      released_amount: newReleased,
-      remaining: total - newReleased,
-      fee,
-      net_amount: netAmount,
-    });
-  } catch (err) {
-    await client.query("ROLLBACK");
-    next(err);
-  } finally {
-    client.release();
-  }
-}
-
-module.exports = { list, create, confirm, cancel, partialRelease };
+/* … truncated 4758 chars — edit only what you need near the top … */
