@@ -9,7 +9,7 @@ exports.up = (pgm) => {
       type: 'uuid',
       notNull: true,
       references: '"users"',
-      onDelete: 'CASCADE',
+      onDelete: 'CASCADER',
     },
     sender_wallet: { type: 'varchar(56)', notNull: true },
     recipient_wallet: { type: 'varchar(56)', notNull: true },

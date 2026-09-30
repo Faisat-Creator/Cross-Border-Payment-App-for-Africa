@@ -14,6 +14,7 @@ const {
   findReceivePath,
   sendStrictReceivePathPayment,
   getBalance,
+  getAssetContractAddress,
 } = require("../services/stellar");
 const webhook = require("../services/webhook");
 const cache = require("../utils/cache");
@@ -175,7 +176,7 @@ async function ensureKycIfNeeded(userId, amount, asset) {
 
 async function getWalletForUser(userId) {
   const walletResult = await db.query(
-    "SELECT public_key, encrypted_secret_key FROM wallets WHERE user_id = $1",
+    "SELECT public_key, encrypted_secret_key FROM wallets WHERE user_id = $1 ORDER BY is_default DESC, created_at ASC LIMIT 1",
     [userId],
   );
   return walletResult.rows[0] || null;
@@ -385,8 +386,19 @@ async function send(req, res, next) {
     let is_encrypted = false;
     let encrypted_memo = null;
     if (encrypt_memo && memo) {
+      // Issue #1163: Encrypted memos are base64-encoded and typically exceed
+      // the 28-byte text memo limit. For now, reject encrypted memos that are
+      // too long with a clear error. Future: store encrypted data off-chain or
+      // use memo_type=hash with a content-addressed reference.
       const { encryptMemo } = require("../utils/encryption");
       encrypted_memo = encryptMemo(memo, recipient_address);
+      const encryptedBytes = Buffer.byteLength(encrypted_memo, 'utf8');
+      if (encryptedBytes > 28) {
+        return res.status(400).json({
+          error: `Encrypted memo is too long (${encryptedBytes} bytes). Stellar text memos are limited to 28 bytes. ` +
+                 `Use a shorter memo or disable encryption.`
+        });
+      }
       memo = encrypted_memo;
       is_encrypted = true;
     }
@@ -447,12 +459,17 @@ async function send(req, res, next) {
       // Balance check — fail fast with a clear message before hitting Stellar
       await checkSufficientBalance(public_key, amount, asset);
 
-      // Broadcast to Stellar
+      // Calculate fee before sending payment
+      const fee_breakdown = await buildFeeBreakdown(amount, asset, null); // We'll update with actual stellar fee later
+      const netAmount = fee_breakdown.net_amount_usdc;
+      const platformFeeAmount = fee_breakdown.platform_fee_usdc;
+
+      // Broadcast to Stellar - send net amount to recipient
       const { transactionHash, ledger, type, claimableBalanceId, feeCharged } = await sendPayment({
         senderPublicKey: public_key,
         encryptedSecretKey: encrypted_secret_key,
         recipientPublicKey: recipient_address,
-        amount,
+        amount: netAmount.toString(), // Send net amount, not gross amount
         asset,
         memo: memo || undefined,
         memoType: memo ? memo_type : undefined,
@@ -461,18 +478,18 @@ async function send(req, res, next) {
 
       const ledger_close_time = await fetchLedgerCloseTime(ledger);
 
-      // Build fee breakdown
-      const fee_breakdown = await buildFeeBreakdown(amount, asset, feeCharged ?? null);
+      // Update fee breakdown with actual stellar fee
+      const updated_fee_breakdown = await buildFeeBreakdown(amount, asset, feeCharged ?? null);
 
       // Save to DB
       const txStatus = type === "claimable_balance" ? "pending_claim" : "confirming";
       await db.query(
         `INSERT INTO transactions (id, sender_wallet, recipient_wallet, amount, asset, memo, memo_type, tx_hash, status, claimable_balance_id, request_id, is_encrypted, encrypted_memo, ledger_close_time, fee_breakdown)
          VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14,$15)`,
-        [txId, public_key, recipient_address, amount, asset, memo || null, memo_type, transactionHash, txStatus, claimableBalanceId || null, req.requestId, is_encrypted, encrypted_memo, ledger_close_time, JSON.stringify(fee_breakdown)],
+        [txId, public_key, recipient_address, amount, asset, memo || null, memo_type, transactionHash, txStatus, claimableBalanceId || null, req.requestId, is_encrypted, encrypted_memo, ledger_close_time, JSON.stringify(updated_fee_breakdown)],
       );
 
-      txResult = { transactionHash, ledger, type, claimableBalanceId, fee_breakdown, txStatus };
+      txResult = { transactionHash, ledger, type, claimableBalanceId, fee_breakdown: updated_fee_breakdown, txStatus };
     });
 
     if (!lockAcquired) {
@@ -502,10 +519,11 @@ async function send(req, res, next) {
     });
 
     if (asset === "USDC" && txResult.fee_breakdown.platform_fee_bps > 0) {
-      const feeStroops = Math.floor(parseFloat(amount) * 1e7 * txResult.fee_breakdown.platform_fee_bps / 10000);
+      const feeStroops = Math.floor(txResult.fee_breakdown.platform_fee_usdc * 1e7);
       if (feeStroops > 0) {
-        depositFee(feeStroops).catch((err) =>
-          logger.warn("Fee deposit failed (non-critical):", { error: err.message }),
+        const usdcContractAddress = getAssetContractAddress("USDC");
+        depositFee(feeStroops, usdcContractAddress, public_key).catch((err) =>
+          logger.error("Fee deposit failed:", { error: err.message, feeStroops, usdcContractAddress }),
         );
       }
     }
@@ -848,8 +866,16 @@ async function sendPath(req, res, next) {
     let encrypted_memo = null;
 
     if (encrypt_memo && memoStr) {
+      // Issue #1163: Validate encrypted memo length
       const { encryptMemo } = require("../utils/encryption");
       encrypted_memo = encryptMemo(memoStr, recipient_address);
+      const encryptedBytes = Buffer.byteLength(encrypted_memo, 'utf8');
+      if (encryptedBytes > 28) {
+        return res.status(400).json({
+          error: `Encrypted memo is too long (${encryptedBytes} bytes). Stellar text memos are limited to 28 bytes. ` +
+                 `Use a shorter memo or disable encryption.`
+        });
+      }
       memoStr = encrypted_memo;
       is_encrypted = true;
     }
@@ -959,8 +985,16 @@ async function sendStrictReceivePath(req, res, next) {
     let encrypted_memo = null;
 
     if (encrypt_memo && memoStr) {
+      // Issue #1163: Validate encrypted memo length
       const { encryptMemo } = require("../utils/encryption");
       encrypted_memo = encryptMemo(memoStr, recipient_address);
+      const encryptedBytes = Buffer.byteLength(encrypted_memo, 'utf8');
+      if (encryptedBytes > 28) {
+        return res.status(400).json({
+          error: `Encrypted memo is too long (${encryptedBytes} bytes). Stellar text memos are limited to 28 bytes. ` +
+                 `Use a shorter memo or disable encryption.`
+        });
+      }
       memoStr = encrypted_memo;
       is_encrypted = true;
     }
@@ -1234,7 +1268,7 @@ async function cancelPendingEscrow(req, res, next) {
 
     // 3. Verify the caller is the sender
     const walletResult = await db.query(
-      "SELECT public_key, encrypted_secret_key FROM wallets WHERE user_id = $1",
+      "SELECT public_key, encrypted_secret_key FROM wallets WHERE user_id = $1 ORDER BY is_default DESC, created_at ASC LIMIT 1",
       [req.user.userId]
     );
     if (!walletResult.rows[0]) {

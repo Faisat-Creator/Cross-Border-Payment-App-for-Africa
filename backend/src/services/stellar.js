@@ -357,6 +357,18 @@ function resolveAsset(asset) {
   return new StellarSdk.Asset(asset, issuer);
 }
 
+/**
+ * Get the Stellar Asset Contract (SAC) address for a given asset.
+ * This derives the contract address from the asset code and issuer.
+ * 
+ * @param {string} asset - Asset code (e.g., 'USDC', 'XLM')
+ * @returns {string} SAC contract address
+ */
+function getAssetContractAddress(asset) {
+  const assetObj = resolveAsset(asset);
+  return assetObj.contractId(networkPassphrase);
+}
+
 async function checkTrustline(recipientPublicKey, assetObj) {
   let recipientAccount;
   try {
@@ -402,8 +414,19 @@ function buildStellarMemo(memo, memoType = 'text') {
   const type = (memoType || 'text').toLowerCase();
 
   switch (type) {
-    case 'text':
-      return StellarSdk.Memo.text(memo.slice(0, 28));
+    case 'text': {
+      // Issue #1163: Stellar text memos are limited to 28 bytes (not characters).
+      // Reject memos that exceed this limit instead of silently truncating them,
+      // which corrupts exchange deposit memos and makes encrypt_memo unusable.
+      const memoBytes = Buffer.byteLength(memo, 'utf8');
+      if (memoBytes > 28) {
+        throw memoValidationError(
+          `Text memo exceeds 28 bytes (${memoBytes} bytes). ` +
+          `Use memo_type=hash for longer memos like encrypted data.`
+        );
+      }
+      return StellarSdk.Memo.text(memo);
+    }
     case 'id': {
       if (!/^\d+$/.test(memo)) throw memoValidationError('Memo ID must be a numeric string');
       try {
@@ -1647,5 +1670,6 @@ module.exports = {
   withSequenceRecovery,
   validateNetworkPassphrase,
   getAssetMetadataByCodeAndIssuer,
+  getAssetContractAddress,
   initMultisigApproval,
 };

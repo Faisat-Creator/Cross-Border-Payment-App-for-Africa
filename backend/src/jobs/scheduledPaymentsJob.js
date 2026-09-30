@@ -68,10 +68,26 @@ async function processOne(payment) {
     [payment.sender_wallet, payment.recipient_wallet, payment.amount, payment.asset, payment.memo, transactionHash]
   );
 
-  await db.query(
-    `UPDATE scheduled_payments SET status = 'completed', updated_at = NOW() WHERE id = $1`,
-    [payment.id]
-  );
+  // Advance the schedule for recurring payments instead of marking them
+  // completed after the first execution. This keeps the job in sync with
+  // the `execute_at`/frequency` schema exposed to the frontend.
+  const freq = (payment.frequency || '').toLowerCase();
+  if (freq === 'daily' || freq === 'weekly' || freq === 'monthly') {
+    const interval = freq === 'daily' ? '1 day' : freq === 'weekly' ? '7 days' : '1 month';
+    await db.query(
+      `UPDATE scheduled_payments
+       SET status = 'pending',
+           run_at = run_at + $interval::interval,
+           updated_at = NOW()
+       WHERE id = $1`,
+      [payment.id]
+    );
+  } else {
+    await db.query(
+      `UPDATE scheduled_payments SET status = 'completed', updated_at = NOW() WHERE id = $1`,
+      [payment.id]
+    );
+  }
 
   logger.info('Scheduled payment executed', { id: payment.id, tx_hash: transactionHash, ledger });
 }
