@@ -176,7 +176,7 @@ async function ensureKycIfNeeded(userId, amount, asset) {
 
 async function getWalletForUser(userId) {
   const walletResult = await db.query(
-    "SELECT public_key, encrypted_secret_key FROM wallets WHERE user_id = $1",
+    "SELECT public_key, encrypted_secret_key FROM wallets WHERE user_id = $1 ORDER BY is_default DESC, created_at ASC LIMIT 1",
     [userId],
   );
   return walletResult.rows[0] || null;
@@ -386,8 +386,19 @@ async function send(req, res, next) {
     let is_encrypted = false;
     let encrypted_memo = null;
     if (encrypt_memo && memo) {
+      // Issue #1163: Encrypted memos are base64-encoded and typically exceed
+      // the 28-byte text memo limit. For now, reject encrypted memos that are
+      // too long with a clear error. Future: store encrypted data off-chain or
+      // use memo_type=hash with a content-addressed reference.
       const { encryptMemo } = require("../utils/encryption");
       encrypted_memo = encryptMemo(memo, recipient_address);
+      const encryptedBytes = Buffer.byteLength(encrypted_memo, 'utf8');
+      if (encryptedBytes > 28) {
+        return res.status(400).json({
+          error: `Encrypted memo is too long (${encryptedBytes} bytes). Stellar text memos are limited to 28 bytes. ` +
+                 `Use a shorter memo or disable encryption.`
+        });
+      }
       memo = encrypted_memo;
       is_encrypted = true;
     }
@@ -855,8 +866,16 @@ async function sendPath(req, res, next) {
     let encrypted_memo = null;
 
     if (encrypt_memo && memoStr) {
+      // Issue #1163: Validate encrypted memo length
       const { encryptMemo } = require("../utils/encryption");
       encrypted_memo = encryptMemo(memoStr, recipient_address);
+      const encryptedBytes = Buffer.byteLength(encrypted_memo, 'utf8');
+      if (encryptedBytes > 28) {
+        return res.status(400).json({
+          error: `Encrypted memo is too long (${encryptedBytes} bytes). Stellar text memos are limited to 28 bytes. ` +
+                 `Use a shorter memo or disable encryption.`
+        });
+      }
       memoStr = encrypted_memo;
       is_encrypted = true;
     }
@@ -966,8 +985,16 @@ async function sendStrictReceivePath(req, res, next) {
     let encrypted_memo = null;
 
     if (encrypt_memo && memoStr) {
+      // Issue #1163: Validate encrypted memo length
       const { encryptMemo } = require("../utils/encryption");
       encrypted_memo = encryptMemo(memoStr, recipient_address);
+      const encryptedBytes = Buffer.byteLength(encrypted_memo, 'utf8');
+      if (encryptedBytes > 28) {
+        return res.status(400).json({
+          error: `Encrypted memo is too long (${encryptedBytes} bytes). Stellar text memos are limited to 28 bytes. ` +
+                 `Use a shorter memo or disable encryption.`
+        });
+      }
       memoStr = encrypted_memo;
       is_encrypted = true;
     }
@@ -1241,7 +1268,7 @@ async function cancelPendingEscrow(req, res, next) {
 
     // 3. Verify the caller is the sender
     const walletResult = await db.query(
-      "SELECT public_key, encrypted_secret_key FROM wallets WHERE user_id = $1",
+      "SELECT public_key, encrypted_secret_key FROM wallets WHERE user_id = $1 ORDER BY is_default DESC, created_at ASC LIMIT 1",
       [req.user.userId]
     );
     if (!walletResult.rows[0]) {
