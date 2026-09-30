@@ -357,6 +357,18 @@ function resolveAsset(asset) {
   return new StellarSdk.Asset(asset, issuer);
 }
 
+/**
+ * Get the Stellar Asset Contract (SAC) address for a given asset.
+ * This derives the contract address from the asset code and issuer.
+ * 
+ * @param {string} asset - Asset code (e.g., 'USDC', 'XLM')
+ * @returns {string} SAC contract address
+ */
+function getAssetContractAddress(asset) {
+  const assetObj = resolveAsset(asset);
+  return assetObj.contractId(networkPassphrase);
+}
+
 async function checkTrustline(recipientPublicKey, assetObj) {
   let recipientAccount;
   try {
@@ -1647,5 +1659,6 @@ module.exports = {
   withSequenceRecovery,
   validateNetworkPassphrase,
   getAssetMetadataByCodeAndIssuer,
+  getAssetContractAddress,
   initMultisigApproval,
 };
