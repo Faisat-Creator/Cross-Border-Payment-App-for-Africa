@@ -289,7 +289,9 @@ jobs:
         cd frontend
         npm run build
       env:
-        REACT_APP_API_URL: http://localhost:5000
+        # FE-130: must include /api so axios baseURL matches the backend routing
+        # (api.js calls paths like /auth/login which resolve to /api/auth/login).
+        REACT_APP_API_URL: http://localhost:5000/api
         REACT_APP_STELLAR_NETWORK: testnet
     
     - name: Run E2E tests

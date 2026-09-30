@@ -1,8 +1,8 @@
 import { useState, useEffect, useRef, useCallback } from 'react';
 import * as StellarSdk from '@stellar/stellar-sdk';
-
-const HORIZON_URL =
-  process.env.REACT_APP_STELLAR_HORIZON_URL || 'https://horizon-testnet.stellar.org';
+// FE-129: Use the shared network config so the Horizon URL is always derived
+// from REACT_APP_STELLAR_NETWORK rather than hard-coding a testnet fallback.
+import { HORIZON_URL } from '../config/network';
 const MAX_RECONNECT_ATTEMPTS = 10;
 const BASE_DELAY_MS = 1000;
 const MAX_DELAY_MS = 30_000;
