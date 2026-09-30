@@ -13,7 +13,8 @@
     "sign_out": "Se déconnecter",
     "no_transactions": "Aucune transaction trouvée",
     "see_all": "Voir tout",
-    "rates_disclaimer": "Les taux sont approximatifs et peuvent être mis en cache. Actualisation environ chaque minute."
+    "rates_disclaimer": "Les taux sont approximatifs et peuvent être mis en cache. Actualisation environ chaque minute.",
+    "close": "Fermer"
   },
   "welcome": {
     "tagline": "Paiements transfrontaliers rapides et sécurisés propulsés par la blockchain Stellar",
@@ -39,7 +40,8 @@
     "have_account": "Vous avez déjà un compte ?",
     "sign_in": "Se connecter",
     "success": "Compte créé ! Votre portefeuille est prêt.",
-    "error": "Échec de l'inscription"
+    "error": "Échec de l'inscription",
+    "verify_email_notice": "Vérifiez votre e-mail pour confirmer votre compte."
   },
   "login": {
     "title": "Bon retour",
@@ -52,7 +54,14 @@
     "no_account": "Vous n'avez pas de compte ?",
     "create_one": "En créer un",
     "error": "Échec de la connexion",
-    "forgot_password": "Mot de passe oublié ?"
+    "forgot_password": "Mot de passe oublié ?",
+    "rate_limited": "Trop de tentatives. Veuillez patienter.",
+    "remember_device": "Se souvenir de cet appareil",
+    "totp_title": "Authentification à deux facteurs",
+    "totp_label": "Code d'authentification",
+    "totp_hint": "Entrez le code à 6 chiffres de votre application d'authentification.",
+    "totp_error": "Code d'authentification invalide",
+    "try_again_in": "Réessayez dans {{seconds}} s"
   },
   "passwordReset": {
     "forgot_title": "Réinitialiser le mot de passe",
@@ -78,7 +87,9 @@
     "recent_activity": "Activité récente",
     "no_transactions": "Aucune transaction. Envoyez votre premier paiement !",
     "to": "À",
-    "from": "De"
+    "from": "De",
+    "add_money": "Ajouter de l'argent",
+    "withdraw": "Retirer"
   },
   "send": {
     "title": "Envoyer de l'argent",
@@ -137,10 +148,31 @@
     "confirm_amount": "Montant :",
     "confirm_memo": "Mémo :",
     "confirm_memo_type": "Type :",
+    "confirm_fee": "Frais :",
     "review": "Vérifier le paiement",
     "confirm_send": "Confirmer et envoyer",
     "success": "Paiement envoyé avec succès !",
     "error": "Échec de la transaction"
+  },
+  "receive": {
+    "federation_label": "Adresse fédérée"
+  },
+  "analytics": {
+    "title": "Analytique",
+    "error": "Impossible de charger les analytiques",
+    "no_data": "Aucune donnée disponible"
+  },
+  "request": {
+    "title": "Demander un paiement",
+    "create": "Créer une demande",
+    "created": "Demande créée",
+    "error": "Impossible de créer la demande"
+  },
+  "scheduled": {
+    "title": "Paiements programmés",
+    "created": "Paiement programmé créé",
+    "deleted": "Paiement programmé supprimé",
+    "none": "Aucun paiement programmé"
   },
   "auth": {
     "setup_pin_title": "Définir le code PIN de transaction",
@@ -158,46 +190,6 @@
     "pin_confirm_button": "Confirmer le code PIN",
     "verify_pin_title": "Vérifier la transaction",
     "confirming_transaction": "Confirmez cette transaction :",
-    "pin_verified": "Code PIN vérifié ! Envoi du paiement...",
-    "pin_max_attempts": "Trop de tentatives échouées. Réessayez plus tard.",
-    "pin_attempts_remaining": "{{remaining}} tentatives restantes",
-    "pin_verify_button": "Vérifier et envoyer",
-    "pin_security_note": "Votre code PIN n'est jamais envoyé ni stocké sur nos serveurs"
-  },
-  "receive": {
-    "title": "Recevoir de l'argent",
-    "subtitle": "Partagez votre adresse de portefeuille ou QR code pour recevoir des paiements",
-    "address_label": "Votre adresse de portefeuille Stellar",
-    "warning": "Envoyez uniquement XLM ou des actifs Stellar à cette adresse",
-    "address_copied": "Adresse copiée !"
-  },
-  "history": {
-    "title": "Historique",
-    "filter_all": "tout",
-    "filter_sent": "envoyés",
-    "filter_received": "reçus",
-    "to": "À :",
-    "from": "De :",
-    "export_csv": "Exporter CSV",
-    "search_placeholder": "Rechercher mémo, adresse ou montant",
-    "date_from": "Date de début",
-    "date_to": "Date de fin",
-    "asset_label": "Actif",
-    "asset_all": "Tous les actifs",
-    "load_error": "Échec du chargement des transactions",
-    "load_more": "Charger plus",
-    "loading_more": "Chargement..."
-  },
-  "profile": {
-    "title": "Profil",
-    "member": "Membre AfriPay",
-    "frequent_contacts": "Contacts fréquents",
-    "no_contacts": "Aucun contact pour l'instant",
-    "contact_name_placeholder": "Nom du contact",
-    "contact_address_placeholder": "G... adresse du portefeuille",
-    "contact_added": "Contact ajouté",
-    "contact_error": "Échec de l'ajout du contact",
-    "address_copied": "Adresse copiée !",
-    "language": "Langue"
+    "pin_verified": "Code PIN vérifié ! Envoi du paiement..."
   }
 }
