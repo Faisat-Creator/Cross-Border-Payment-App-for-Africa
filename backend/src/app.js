@@ -61,9 +61,6 @@ if (process.env.TRUST_PROXY) {
 }
 
 app.use(Sentry.Handlers.requestHandler());
-// Serve uploaded avatars
-const path = require('path');
-app.use('/uploads/avatars', express.static(path.join(__dirname, '../uploads/avatars')));
 
 app.use(requestId);
 app.use((req, res, next) => {
@@ -76,11 +73,14 @@ app.use((req, res, next) => {
   res.locals.cspNonce = crypto.randomBytes(16).toString('base64');
   next();
 });
-app.use((req, res, next) => helmet({
+
+// Helmet is instantiated once at startup. The per-request CSP nonce is supplied
+// via a directive function that reads res.locals.cspNonce at request time.
+const helmetMiddleware = helmet({
   contentSecurityPolicy: {
     directives: {
       defaultSrc: ["'none'"],
-      scriptSrc: ["'self'", `'nonce-${res.locals.cspNonce}'`],
+      scriptSrc: ["'self'", (req, res) => `'nonce-${res.locals.cspNonce}'`],
       connectSrc: ["'self'", 'https://horizon.stellar.org', 'wss://horizon.stellar.org'],
       imgSrc: ["'self'", 'data:'],
       frameAncestors: ["'none'"],
@@ -93,13 +93,15 @@ app.use((req, res, next) => helmet({
   },
   frameguard: { action: 'deny' },
   referrerPolicy: { policy: 'strict-origin-when-cross-origin' },
-  permissionsPolicy: {
-    camera: [],
-    microphone: [],
-    geolocation: [],
-    payment: [],
-  },
-})(req, res, next));
+});
+app.use(helmetMiddleware);
+
+// Helmet 8 has no `permissionsPolicy` option, so emit the header explicitly.
+app.use((req, res, next) => {
+  res.setHeader('Permissions-Policy', 'camera=(), microphone=(), geolocation=(), payment=()');
+  next();
+});
+
 app.use(cors({ origin: process.env.FRONTEND_URL, credentials: true, maxAge: 86400 }));
 app.use(express.json());
 
@@ -107,6 +109,16 @@ app.use((req, res, next) => {
   res.removeHeader('Server');
   next();
 });
+
+// Serve uploaded avatars after the security middleware so responses carry
+// nosniff, CSP and Cross-Origin-Resource-Policy headers.
+const path = require('path');
+app.use('/uploads/avatars', express.static(path.join(__dirname, '../uploads/avatars'), {
+  setHeaders: (res) => {
+    res.setHeader('X-Content-Type-Options', 'nosniff');
+    res.setHeader('Content-Disposition', 'inline');
+  },
+}));
 
 // Granular per-endpoint rate limiting (Redis-backed when REDIS_URL is set)
 app.use('/api/auth/login', rateLimiters.authLimiter);
@@ -205,99 +217,6 @@ const swaggerOptions = {
         },
         // Derived directly from the express-validator field spec in
         // validators/paymentSendValidators.js so the docs cannot drift from
-        // what the runtime validators actually accept.
-        PaymentSendRequest: paymentSendValidators.openApiSchema
-      }
-    }
-  },
-  apis: ['./src/routes/*.js']
-};
+        // what the runtime v
 
-const specs = swaggerJsdoc(swaggerOptions);
-
-app.use('/api/docs', (req, res, next) => {
-  res.removeHeader('Content-Security-Policy');
-  next();
-});
-app.use('/api/docs', swaggerUi.serve, swaggerUi.setup(specs));
-
-/**
- * @openapi
- * /health:
- *   get:
- *     summary: Public liveness probe
- *     description: Returns the overall status and pool utilization. Use /api/admin/health for full diagnostics.
- *     tags: [Health]
- *     responses:
- *       200:
- *         description: Service is healthy
- *         content:
- *           application/json:
- *             schema:
- *               type: object
- *               properties:
- *                 status:
- *                   type: string
- *                   enum: [ok, degraded]
- *                 pool:
- *                   type: object
- *                   properties:
- *                     total: { type: integer }
- *                     idle: { type: integer }
- *                     waiting: { type: integer }
- *       503:
- *         description: Service is degraded
- */
-app.get('/health', async (req, res) => {
-  try {
-    const health = await runHealthChecks();
-    res.status(health.status === 'ok' ? 200 : 503).json({
-      status: health.status,
-      pool: health.pool,
-    });
-  } catch {
-    res.status(503).json({ status: 'degraded' });
-  }
-});
-
-const deepHealthLimiter = rateLimit({
-  windowMs: 60 * 1000,
-  max: 30,
-  message: { error: 'Too many health check requests.' },
-});
-
-app.get('/health/deep', deepHealthLimiter, async (req, res) => {
-  try {
-    const health = await runDeepHealthChecks();
-    const httpStatus = health.status === 'unhealthy' ? 503 : 200;
-    res.status(httpStatus).json(health);
-  } catch {
-    res.status(503).json({ status: 'unhealthy' });
-  }
-});
-app.get('/api/health/ledger-listener', (req, res) => {
-  res.json(getLedgerHealth());
-});
-
-app.get('/metrics', async (req, res) => {
-  const token = process.env.METRICS_TOKEN;
-  if (token) {
-    const auth = req.headers.authorization || '';
-    if (auth !== `Bearer ${token}`) {
-      return res.status(401).end();
-    }
-  }
-  res.set('Content-Type', registry.contentType);
-  res.end(await registry.metrics());
-});
-
-// @sentry/node v8: request isolation comes from Sentry.init() in index.js;
-// this registers the error handler (replaces the v7 Sentry.Handlers API).
-Sentry.setupExpressErrorHandler(app);
-
-app.use((err, req, res, next) => {
-  req.logger.error(err.message, { stack: err.stack, status: err.status });
-  res.status(err.status || 500).json({ error: err.message || 'Internal server error' });
-});
-
-module.exports = app;
+/* … truncated 72 chars — edit only what you need near the top … */
