@@ -523,3 +523,6 @@ MIT
 - #1202: [FE-114] Send Money's trustline pre-check calls a non-existent endpoint and silently hides the "no trustline" warning
 <!-- handsoff-issue-1140 -->
 - #1140: [SC-135] loyalty-token: `redeem` burns points but records no entitlement or event, so the backend cannot verify a discount was paid for
+
+<!-- handsoff-issue-1178 -->
+- #1178: [BE-132] `POST /api/auth/2fa/disable` only requires the password — no TOTP confirmation and no notification

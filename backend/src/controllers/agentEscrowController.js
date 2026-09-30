@@ -19,9 +19,30 @@ const audit = require("../services/audit");
 
 const DEFAULT_FEE_BPS = parseInt(process.env.ESCROW_FEE_BPS || "250", 10);
 
+// The agent-escrow contract only ever locks its configured USDC token, so any
+// other client-supplied asset would diverge from on-chain state.
+const ESCROW_ASSET = "USDC";
+
 const ESCROW_STATUSES = ["pending", "completed", "cancelled"];
 const DEFAULT_PAGE_SIZE = 20;
 const MAX_PAGE_SIZE = 100;
+
+/**
+ * Convert a decimal amount string to stroops (1e7 base units) without
+ * floating-point error. Rejects non-decimal strings and more than 7 places.
+ * Returns null when the input is not a valid amount.
+ */
+function amountToStroops(amount) {
+  if (typeof amount !== "string") return null;
+  const trimmed = amount.trim();
+  if (!/^\d+(\.\d{1,7})?$/.test(trimmed)) return null;
+
+  const [whole, fraction = ""] = trimmed.split(".");
+  const paddedFraction = (fraction + "0000000").slice(0, 7);
+  const stroops = BigInt(whole) * 10000000n + BigInt(paddedFraction);
+  if (stroops <= 0n) return null;
+  return stroops;
+}
 
 /**
  * GET /api/escrow?role=sender|agent&status=…&page=1&limit=20
@@ -97,7 +118,26 @@ async function list(req, res, next) {
 async function create(req, res, next) {
   const escrowDbId = uuidv4();
   try {
-    const { agent_wallet, recipient_wallet, amount, asset = "USDC" } = req.body;
+    const { agent_wallet, recipient_wallet, amount, asset = ESCROW_ASSET } = req.body;
+
+    // The contract only locks its configured USDC token; reject anything else
+    // so the DB record cannot diverge from on-chain state.
+    if (asset !== ESCROW_ASSET) {
+      return res.status(400).json({
+        error: `Unsupported asset. Only ${ESCROW_ASSET} is accepted.`,
+        code: "UNSUPPORTED_ASSET",
+      });
+    }
+
+    // Validate the amount as a decimal string with at most 7 places and convert
+    // to stroops without floating-point error.
+    const amountStroops = amountToStroops(amount);
+    if (amountStroops === null) {
+      return res.status(400).json({
+        error: "Invalid amount. Provide a positive decimal string with at most 7 decimal places.",
+        code: "INVALID_AMOUNT",
+      });
+    }
 
     // Validate that the agent is a registered, approved AfriPay agent
     const agentResult = await db.query(
@@ -144,7 +184,7 @@ async function create(req, res, next) {
       encryptedSecretKey: encrypted_secret_key,
       recipient: recipient_wallet,
       agent: agent_wallet,
-      amount: Math.round(parseFloat(amount) * 1e7), // convert to stroops
+      amount: amountStroops.toString(), // stroops, converted without float error
       feeBps: DEFAULT_FEE_BPS,
     });
 
@@ -385,4 +425,4 @@ async function partialRelease(req, res, next) {
   }
 }
 
-module.exports = { list, create, confirm, cancel, partialRelease };
+/* … truncated 4758 chars — edit only what you need near the top … */
